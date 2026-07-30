@@ -58,6 +58,7 @@ pub fn build_router(state: AppState) -> Router {
         .route("/api/test-query", get(test_query_handler))
         .route("/api/insights", get(insights_handler))
         .route("/api/export", get(export_handler))
+        .route("/api/sessions", get(sessions_handler))
         .fallback_service(ServeDir::new("static"))
         .with_state(state)
 }
@@ -157,4 +158,11 @@ async fn export_handler(
             .unwrap()),
         None => Err(axum::http::StatusCode::NOT_FOUND),
     }
+}
+
+async fn sessions_handler(State(state): State<AppState>) -> Json<Vec<serde_json::Value>> {
+    let sessions: Vec<_> = state.agent.list_sessions().into_iter().map(|(id, count)| {
+        serde_json::json!({"session_id": id, "message_count": count})
+    }).collect();
+    Json(sessions)
 }

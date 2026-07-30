@@ -97,6 +97,22 @@ impl Agent {
         Ok(Self { http_client, api_key, db, schema_summary, insights_brief, sessions: Arc::new(RwLock::new(HashMap::new())) })
     }
 
+    /// Trim session messages to a sliding window: keep system prompt + last MAX_WINDOW messages.
+    pub fn trim_sliding_window(messages: &mut Vec<ChatMessage>) {
+        const MAX_WINDOW: usize = 20;
+        if messages.len() <= MAX_WINDOW {
+            return;
+        }
+        let old_len = messages.len();
+        let system_msg = messages.remove(0);
+        let trim_from = messages.len().saturating_sub(MAX_WINDOW - 1);
+        let kept: Vec<_> = messages.drain(trim_from..).collect();
+        messages.clear();
+        messages.push(system_msg);
+        messages.extend(kept);
+        tracing::info!("Sliding window trimmed session from {} to {} messages", old_len, messages.len());
+    }
+
     /// Reset session history
     pub fn reset_session(&self, session_id: &str) {
         self.sessions.write().remove(session_id);
@@ -246,6 +262,8 @@ impl Agent {
             name: None,
         });
 
+
+        Self::trim_sliding_window(&mut messages);
         let mut trace =
             ConversationTrace { session_id: session_id.clone(), steps: Vec::new(), final_answer: String::new() };
 
@@ -380,6 +398,8 @@ impl Agent {
                 name: None,
             });
 
+
+            Self::trim_sliding_window(&mut messages);
             let mut trace = ConversationTrace {
                 session_id: session_id.clone(),
                 steps: Vec::new(),
