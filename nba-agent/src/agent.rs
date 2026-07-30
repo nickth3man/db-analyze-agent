@@ -75,8 +75,8 @@ pub struct Agent {
     schema_summary: String,
     insights_brief: String,
     sessions: Arc<RwLock<HashMap<String, Vec<ChatMessage>>>>,
+    sessions_path: String,
 }
-
 impl Agent {
     pub async fn new(db: DbContext, insights_brief: String) -> Result<Self> {
         let api_key = std::env::var("OPENROUTER_API_KEY")
@@ -93,8 +93,12 @@ impl Agent {
         ];
         let enriched = db.build_enriched_schema(Some(&key_tables)).await?;
         let schema_summary = DbContext::format_enriched_schema(&enriched);
+        let sessions_path = "data/sessions.json".to_string();
 
-        Ok(Self { http_client, api_key, db, schema_summary, insights_brief, sessions: Arc::new(RwLock::new(HashMap::new())) })
+        // Restore sessions from disk
+        let sessions = Self::load_sessions(&sessions_path);
+
+        Ok(Self { http_client, api_key, db, schema_summary, insights_brief, sessions, sessions_path })
     }
 
     /// Trim session messages to a sliding window: keep system prompt + last MAX_WINDOW messages.
@@ -111,6 +115,41 @@ impl Agent {
         messages.push(system_msg);
         messages.extend(kept);
         tracing::info!("Sliding window trimmed session from {} to {} messages", old_len, messages.len());
+    }
+
+    /// Load sessions from disk JSON file.
+    fn load_sessions(path: &str) -> Arc<RwLock<HashMap<String, Vec<ChatMessage>>>> {
+        match std::fs::read_to_string(path) {
+            Ok(contents) => {
+                match serde_json::from_str::<HashMap<String, Vec<ChatMessage>>>(&contents) {
+                    Ok(map) => {
+                        tracing::info!("Restored {} sessions from {}", map.len(), path);
+                        Arc::new(RwLock::new(map))
+                    }
+                    Err(e) => {
+                        tracing::warn!("Failed to parse sessions file: {}, starting fresh", e);
+                        Arc::new(RwLock::new(HashMap::new()))
+                    }
+                }
+            }
+            Err(_) => {
+                tracing::info!("No sessions file at {}, starting fresh", path);
+                Arc::new(RwLock::new(HashMap::new()))
+            }
+        }
+    }
+
+    /// Save sessions to disk JSON file.
+    fn save_sessions(&self) {
+        let sessions = self.sessions.read();
+        match serde_json::to_string_pretty(&*sessions) {
+            Ok(json) => {
+                if let Err(e) = std::fs::write(&self.sessions_path, json) {
+                    tracing::warn!("Failed to save sessions: {}", e);
+                }
+            }
+            Err(e) => tracing::warn!("Failed to serialize sessions: {}", e),
+        }
     }
 
     /// Reset session history
@@ -361,6 +400,7 @@ impl Agent {
         }
 
         self.sessions.write().insert(session_id, messages);
+        self.save_sessions();
 
         Ok(trace)
     }
@@ -535,6 +575,7 @@ impl Agent {
             }
 
             this.sessions.write().insert(session_id, messages);
+            this.save_sessions();
             yield Ok(AgentStreamEvent::Completed { trace });
         })
     }
