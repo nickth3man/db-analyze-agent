@@ -1,5 +1,5 @@
 use nba_agent::db;
-
+use std::net::SocketAddr;
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
     dotenvy::dotenv().ok();
@@ -14,7 +14,6 @@ async fn main() -> anyhow::Result<()> {
 
     let listener = tokio::net::TcpListener::bind("0.0.0.0:3000").await?;
     tracing::info!("NBA Database Agent server online at http://localhost:3000");
-    axum::serve(listener, app).await?;
-
+    axum::serve(listener, app.into_make_service_with_connect_info::<SocketAddr>()).await?;
     Ok(())
 }
