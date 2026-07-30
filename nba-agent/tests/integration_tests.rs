@@ -532,3 +532,31 @@ fn test_append_markdown_table_empty() {
     nba_agent::agent::Agent::append_markdown_table(&mut md, &rows);
     assert!(md.is_empty(), "Empty rows should produce no output");
 }
+
+// ---------------------------------------------------------------------------
+// Query result cache tests
+// ---------------------------------------------------------------------------
+
+#[tokio::test]
+async fn test_cache_returns_same_result() {
+    let db = match get_test_db() {
+        Some(d) => d,
+        None => return,
+    };
+    let query = "SELECT COUNT(*) as n FROM game;".to_string();
+    let r1 = db.run_sql(query.clone(), Some(1)).await.unwrap();
+    let r2 = db.run_sql(query, Some(1)).await.unwrap();
+    assert_eq!(r1[0]["n"], r2[0]["n"], "Cached result should match original");
+}
+
+#[tokio::test]
+async fn test_cache_different_max_rows() {
+    let db = match get_test_db() {
+        Some(d) => d,
+        None => return,
+    };
+    // Different max_rows should produce different cache keys
+    let r1 = db.run_sql("SELECT game_id FROM game;".to_string(), Some(3)).await.unwrap();
+    let r2 = db.run_sql("SELECT game_id FROM game;".to_string(), Some(5)).await.unwrap();
+    assert_ne!(r1.len(), r2.len(), "Different max_rows should give different results");
+}

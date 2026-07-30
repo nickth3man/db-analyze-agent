@@ -7,6 +7,12 @@ use std::sync::Arc;
 #[derive(Clone)]
 pub struct DbContext {
     conn: Arc<Mutex<Connection>>,
+    cache: Arc<Mutex<std::collections::HashMap<String, CachedResult>>>,
+}
+
+struct CachedResult {
+    rows: Vec<Value>,
+    inserted_at: std::time::Instant,
 }
 
 #[derive(Debug, Serialize, Deserialize)]
@@ -78,14 +84,29 @@ impl DbContext {
     pub fn new(path: &str) -> DuckResult<Self> {
         let config = Config::default().access_mode(AccessMode::ReadOnly)?;
         let conn = Connection::open_with_flags(path, config)?;
-        Ok(Self { conn: Arc::new(Mutex::new(conn)) })
+        Ok(Self {
+            conn: Arc::new(Mutex::new(conn)),
+            cache: Arc::new(Mutex::new(std::collections::HashMap::new())),
+        })
     }
 
-    /// Execute arbitrary SQL and return results capped at `max_rows` (default 50)
+    /// Execute arbitrary SQL and return results capped at `max_rows` (default 50).
+    /// Results are cached with a 60-second TTL for repeated queries.
     pub async fn run_sql(&self, query: String, max_rows_opt: Option<usize>) -> anyhow::Result<Vec<Value>> {
-        let conn_arc = self.conn.clone();
         let max_rows = max_rows_opt.unwrap_or(50);
+        let cache_key = format!("{}|{}", query.trim(), max_rows);
 
+        // Check cache
+        {
+            let cache = self.cache.lock();
+            if let Some(entry) = cache.get(&cache_key) {
+                if entry.inserted_at.elapsed().as_secs() < 60 {
+                    return Ok(entry.rows.clone());
+                }
+            }
+        }
+
+        let conn_arc = self.conn.clone();
         let results = tokio::task::spawn_blocking(move || -> anyhow::Result<Vec<Value>> {
             let conn = conn_arc.lock();
             let mut stmt = conn.prepare(&query)?;
@@ -159,7 +180,23 @@ impl DbContext {
             Ok(results)
         })
         .await??;
-
+        // Cache successful results (evict oldest if over 100 entries)
+        {
+            let mut cache = self.cache.lock();
+            if cache.len() >= 100 {
+                // Remove the oldest entry by TTL
+                let oldest_key = cache.iter()
+                    .min_by_key(|(_, v)| v.inserted_at)
+                    .map(|(k, _)| k.clone());
+                if let Some(key) = oldest_key {
+                    cache.remove(&key);
+                }
+            }
+            cache.insert(cache_key, CachedResult {
+                rows: results.clone(),
+                inserted_at: std::time::Instant::now(),
+            });
+        }
         Ok(results)
     }
 
