@@ -560,3 +560,38 @@ async fn test_cache_different_max_rows() {
     let r2 = db.run_sql("SELECT game_id FROM game;".to_string(), Some(5)).await.unwrap();
     assert_ne!(r1.len(), r2.len(), "Different max_rows should give different results");
 }
+
+// ---------------------------------------------------------------------------
+// SQL validation tests
+// ---------------------------------------------------------------------------
+
+#[test]
+fn test_validate_sql_allows_select() {
+    assert!(nba_agent::db::DbContext::validate_sql("SELECT * FROM game;").is_ok());
+    assert!(nba_agent::db::DbContext::validate_sql("SELECT COUNT(*) FROM player;").is_ok());
+}
+
+#[test]
+fn test_validate_sql_rejects_drop() {
+    assert!(nba_agent::db::DbContext::validate_sql("DROP TABLE game;").is_err());
+}
+
+#[test]
+fn test_validate_sql_rejects_insert() {
+    assert!(nba_agent::db::DbContext::validate_sql("INSERT INTO game VALUES (1);").is_err());
+}
+
+#[test]
+fn test_validate_sql_rejects_delete() {
+    assert!(nba_agent::db::DbContext::validate_sql("DELETE FROM game;").is_err());
+}
+
+#[test]
+fn test_validate_sql_rejects_update() {
+    assert!(nba_agent::db::DbContext::validate_sql("UPDATE game SET season_id = 1;").is_err());
+}
+
+#[test]
+fn test_validate_sql_rejects_alter() {
+    assert!(nba_agent::db::DbContext::validate_sql("ALTER TABLE game ADD COLUMN x INT;").is_err());
+}

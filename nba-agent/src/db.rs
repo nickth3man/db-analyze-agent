@@ -105,6 +105,10 @@ impl DbContext {
     /// Execute arbitrary SQL and return results capped at `max_rows` (default 50).
     /// Results are cached with a 60-second TTL for repeated queries.
     pub async fn run_sql(&self, query: String, max_rows_opt: Option<usize>) -> anyhow::Result<Vec<Value>> {
+        // Validate: reject destructive SQL patterns
+        if let Err(reason) = Self::validate_sql(&query) {
+            return Err(anyhow::anyhow!("SQL rejected: {}", reason));
+        }
         let query_saved = query.clone();
         let max_rows = max_rows_opt.unwrap_or(50);
         let cache_key = format!("{}|{}", query.trim(), max_rows);
@@ -223,6 +227,34 @@ impl DbContext {
             if history.len() > 200 { history.remove(0); }
         }
         Ok(results)
+    }
+
+    /// Validate SQL query: reject destructive patterns. Even though the DB
+    /// is read-only, this provides defense-in-depth with clear error messages.
+    pub fn validate_sql(query: &str) -> Result<(), String> {
+        let upper = query.trim().to_uppercase();
+        let first_word = upper.split_whitespace().next().unwrap_or("");
+
+        // Block DDL statements
+        for keyword in &["DROP", "ALTER", "CREATE", "TRUNCATE"] {
+            if upper.starts_with(keyword) || upper.contains(&format!(" {}", keyword)) {
+                return Err(format!("{} statements are not allowed on this read-only agent", keyword));
+            }
+        }
+
+        // Block DML write statements
+        for keyword in &["INSERT", "UPDATE", "DELETE", "MERGE", "REPLACE"] {
+            if first_word == *keyword || upper.starts_with(keyword) {
+                return Err(format!("{} statements are not allowed (database is read-only)", keyword));
+            }
+        }
+
+        // Block PRAGMA writes
+        if first_word == "PRAGMA" && !upper.contains("TABLE_INFO") && !upper.contains("DATABASE_LIST") {
+            return Err("PRAGMA write statements are not allowed".to_string());
+        }
+
+        Ok(())
     }
 
     /// Parse DuckDB error messages for "candidate bindings" and auto-correct

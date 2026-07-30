@@ -3,7 +3,7 @@ pub mod db;
 
 use axum::{
     Json, Router,
-    extract::{ConnectInfo, Query, State},
+    extract::{Query, State},
     http::{Request, StatusCode},
     middleware::{self, Next},
     response::{IntoResponse, Response, sse::{Event, Sse}},
@@ -12,27 +12,26 @@ use axum::{
 use futures::StreamExt;
 use parking_lot::Mutex;
 use serde::{Deserialize, Serialize};
-use std::{collections::HashMap, convert::Infallible, net::SocketAddr, sync::Arc, time::Instant};
+use std::{convert::Infallible, sync::Arc, time::Instant};
 use tower_http::services::ServeDir;
 
 
 #[derive(Clone)]
-struct RateLimiter {
-    inner: Arc<Mutex<HashMap<SocketAddr, Vec<Instant>>>>,
+pub struct RateLimiter {
+    inner: Arc<Mutex<Vec<Instant>>>,
     max_requests: usize,
     window_secs: u64,
 }
 
 impl RateLimiter {
-    fn new(max_requests: usize, window_secs: u64) -> Self {
-        Self { inner: Arc::new(Mutex::new(HashMap::new())), max_requests, window_secs }
+    pub fn new(max_requests: usize, window_secs: u64) -> Self {
+        Self { inner: Arc::new(Mutex::new(Vec::new())), max_requests, window_secs }
     }
 
-    fn check(&self, addr: SocketAddr) -> bool {
-        let mut map = self.inner.lock();
+    pub fn check(&self) -> bool {
+        let mut entries = self.inner.lock();
         let now = Instant::now();
         let window = std::time::Duration::from_secs(self.window_secs);
-        let entries = map.entry(addr).or_default();
         entries.retain(|t| now.duration_since(*t) < window);
         if entries.len() >= self.max_requests {
             return false;
@@ -42,14 +41,13 @@ impl RateLimiter {
     }
 }
 
-async fn rate_limit_middleware(
-    ConnectInfo(addr): ConnectInfo<SocketAddr>,
+pub async fn rate_limit_middleware(
     State(limiter): State<RateLimiter>,
     request: Request<axum::body::Body>,
     next: Next,
 ) -> Response {
-    if !limiter.check(addr) {
-        return (StatusCode::TOO_MANY_REQUESTS, "Rate limit exceeded. Try again later.").into_response();
+    if !limiter.check() {
+        return (StatusCode::TOO_MANY_REQUESTS, "Rate limit exceeded.").into_response();
     }
     next.run(request).await
 }
@@ -237,46 +235,29 @@ async fn stats_handler(State(state): State<AppState>) -> Json<StatsResponse> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::net::{IpAddr, Ipv4Addr};
 
     #[test]
     fn test_rate_limiter_allows_within_limit() {
         let limiter = RateLimiter::new(5, 60);
-        let addr = SocketAddr::new(IpAddr::V4(Ipv4Addr::new(127, 0, 0, 1)), 12345);
         for _ in 0..5 {
-            assert!(limiter.check(addr), "Should allow request within limit");
+            assert!(limiter.check(), "Should allow request within limit");
         }
     }
 
     #[test]
     fn test_rate_limiter_blocks_exceeding_limit() {
         let limiter = RateLimiter::new(3, 60);
-        let addr = SocketAddr::new(IpAddr::V4(Ipv4Addr::new(127, 0, 0, 1)), 12345);
-        assert!(limiter.check(addr));
-        assert!(limiter.check(addr));
-        assert!(limiter.check(addr));
-        assert!(!limiter.check(addr), "Should block 4th request");
-    }
-
-    #[test]
-    fn test_rate_limiter_per_ip_isolation() {
-        let limiter = RateLimiter::new(2, 60);
-        let addr1 = SocketAddr::new(IpAddr::V4(Ipv4Addr::new(127, 0, 0, 1)), 1000);
-        let addr2 = SocketAddr::new(IpAddr::V4(Ipv4Addr::new(192, 168, 1, 1)), 2000);
-        assert!(limiter.check(addr1));
-        assert!(limiter.check(addr1));
-        assert!(limiter.check(addr2), "Different IP should not be affected");
-        assert!(!limiter.check(addr1), "addr1 should be blocked");
-        assert!(limiter.check(addr2), "addr2 should still have quota");
+        assert!(limiter.check());
+        assert!(limiter.check());
+        assert!(limiter.check());
+        assert!(!limiter.check(), "Should block 4th request");
     }
 
     #[test]
     fn test_rate_limiter_window_expiry() {
-        let limiter = RateLimiter::new(2, 0); // 0-second window = instant expiry
-        let addr = SocketAddr::new(IpAddr::V4(Ipv4Addr::new(127, 0, 0, 1)), 12345);
-        assert!(limiter.check(addr));
-        // With 0-second window, old entries are immediately expired
-        assert!(limiter.check(addr), "0s window should expire instantly");
-        assert!(limiter.check(addr));
+        let limiter = RateLimiter::new(2, 0);
+        assert!(limiter.check());
+        assert!(limiter.check(), "0s window should expire instantly");
+        assert!(limiter.check());
     }
 }
