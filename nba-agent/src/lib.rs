@@ -59,6 +59,7 @@ pub fn build_router(state: AppState) -> Router {
         .route("/api/insights", get(insights_handler))
         .route("/api/export", get(export_handler))
         .route("/api/sessions", get(sessions_handler))
+        .route("/api/history", get(history_handler))
         .fallback_service(ServeDir::new("static"))
         .with_state(state)
 }
@@ -165,4 +166,8 @@ async fn sessions_handler(State(state): State<AppState>) -> Json<Vec<serde_json:
         serde_json::json!({"session_id": id, "message_count": count})
     }).collect();
     Json(sessions)
+}
+
+async fn history_handler(State(state): State<AppState>) -> Json<Vec<db::DbHistoryEntry>> {
+    Json(state.db.list_history())
 }

@@ -98,6 +98,14 @@
                 </svg>
                 Export
             </button>
+            <button id="btn-history" title="Query history"
+                class="bg-[#21262d] hover:bg-[#30363d] text-gray-300 text-xs px-3 py-1.5 rounded-md border border-[#30363d] transition-colors flex items-center gap-1.5">
+                <svg class="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                    <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2"
+                        d="M12 8v4l3 3m6-3a9 9 0 11-18 0 9 9 0 0118 0z"></path>
+                </svg>
+                History
+            </button>
         </div>
     </header>
 
@@ -143,6 +151,19 @@
             </button>
         </form>
     </footer>
+
+    <!-- Query History Sidebar -->
+    <div id="history-sidebar"
+        class="fixed right-0 top-0 h-full w-80 bg-[#161b22] border-l border-[#30363d] shadow-xl transform translate-x-full transition-transform duration-200 z-50 overflow-y-auto"
+        style="display:none">
+        <div class="p-4 border-b border-[#30363d] flex justify-between items-center sticky top-0 bg-[#161b22]">
+            <h3 class="text-sm font-bold text-white">Query History</h3>
+            <button id="btn-close-history" class="text-gray-400 hover:text-white text-lg">&times;</button>
+        </div>
+        <div id="history-list" class="p-2 space-y-2">
+            <div class="text-xs text-gray-500 text-center py-4">No queries yet</div>
+        </div>
+    </div>
 
     <script>
         let currentSessionId = localStorage.getItem('nba_agent_session') || crypto.randomUUID();
@@ -479,6 +500,48 @@
             } finally {
                 setLoading(false);
             }
+        });
+
+        // History sidebar toggle
+        const sidebar = document.getElementById('history-sidebar');
+        const historyList = document.getElementById('history-list');
+        document.getElementById('btn-history').addEventListener('click', async () => {
+            sidebar.style.display = 'block';
+            requestAnimationFrame(() => sidebar.classList.remove('translate-x-full'));
+            // Fetch history
+            try {
+                const res = await fetch('/api/history');
+                const entries = await res.json();
+                historyList.innerHTML = '';
+                if (entries.length === 0) {
+                    historyList.innerHTML = '<div class="text-xs text-gray-500 text-center py-4">No queries yet</div>';
+                } else {
+                    for (const e of entries) {
+                        const div = document.createElement('div');
+                        div.className = 'p-2 rounded bg-[#0d1117] border border-[#21262d] text-xs cursor-pointer hover:bg-[#21262d]';
+                        div.title = 'Click to re-run';
+                        div.addEventListener('click', () => {
+                            document.getElementById('message-input').value = e.sql;
+                            document.getElementById('chat-form').dispatchEvent(new Event('submit'));
+                        });
+                        const sqlDiv = document.createElement('div');
+                        sqlDiv.className = 'text-blue-400 font-mono truncate';
+                        sqlDiv.textContent = e.sql.substring(0, 80);
+                        div.appendChild(sqlDiv);
+                        const metaDiv = document.createElement('div');
+                        metaDiv.className = 'text-gray-500 mt-1';
+                        metaDiv.textContent = `${e.elapsed_ms}ms \u00b7 ${e.row_count} rows \u00b7 ${e.success ? '\u2705' : '\u274c'}`;
+                        div.appendChild(metaDiv);
+                        historyList.appendChild(div);
+                    }
+                }
+            } catch (e) {
+                historyList.innerHTML = '<div class="text-xs text-red-400 text-center py-4">Failed to load history</div>';
+            }
+        });
+        document.getElementById('btn-close-history').addEventListener('click', () => {
+            sidebar.classList.add('translate-x-full');
+            setTimeout(() => sidebar.style.display = 'none', 200);
         });
     </script>
 </body>

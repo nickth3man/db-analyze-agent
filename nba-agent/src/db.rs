@@ -8,6 +8,16 @@ use std::sync::Arc;
 pub struct DbContext {
     conn: Arc<Mutex<Connection>>,
     cache: Arc<Mutex<std::collections::HashMap<String, CachedResult>>>,
+    history: Arc<Mutex<Vec<DbHistoryEntry>>>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct DbHistoryEntry {
+    pub timestamp: u64,
+    pub sql: String,
+    pub row_count: usize,
+    pub elapsed_ms: u64,
+    pub success: bool,
 }
 
 struct CachedResult {
@@ -87,15 +97,16 @@ impl DbContext {
         Ok(Self {
             conn: Arc::new(Mutex::new(conn)),
             cache: Arc::new(Mutex::new(std::collections::HashMap::new())),
+            history: Arc::new(Mutex::new(Vec::new())),
         })
     }
 
     /// Execute arbitrary SQL and return results capped at `max_rows` (default 50).
     /// Results are cached with a 60-second TTL for repeated queries.
     pub async fn run_sql(&self, query: String, max_rows_opt: Option<usize>) -> anyhow::Result<Vec<Value>> {
+        let query_saved = query.clone();
         let max_rows = max_rows_opt.unwrap_or(50);
         let cache_key = format!("{}|{}", query.trim(), max_rows);
-
         // Check cache
         {
             let cache = self.cache.lock();
@@ -196,6 +207,19 @@ impl DbContext {
                 rows: results.clone(),
                 inserted_at: std::time::Instant::now(),
             });
+        }
+        // Record to history
+        {
+            let entry = DbHistoryEntry {
+                timestamp: std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_secs()).unwrap_or(0),
+                sql: query_saved,
+                row_count: results.len(),
+                elapsed_ms: 0,
+                success: true,
+            };
+            let mut history = self.history.lock();
+            history.push(entry);
+            if history.len() > 200 { history.remove(0); }
         }
         Ok(results)
     }
@@ -744,6 +768,11 @@ fn format_num_comma(n: i64) -> String {
 }
 
     /// Get curated schema context overview for key entities
+
+    /// List recent query history entries (most recent first, capped at 50).
+    pub fn list_history(&self) -> Vec<DbHistoryEntry> {
+        self.history.lock().iter().rev().take(50).cloned().collect()
+    }
     pub async fn get_schema_summary(&self) -> anyhow::Result<String> {
         let key_tables = vec![
             "player",

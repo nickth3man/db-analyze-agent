@@ -152,6 +152,7 @@ impl Agent {
         }
     }
 
+
     /// Reset session history
     pub fn reset_session(&self, session_id: &str) {
         self.sessions.write().remove(session_id);
@@ -674,7 +675,6 @@ impl Agent {
             _ => ("Unknown tool".to_string(), name.to_string(), format!("Tool `{}` not supported.", name)),
         };
         let elapsed_ms = start.elapsed().as_millis() as u64;
-        // Count rows in the result (parse JSON array if possible)
         let row_count = serde_json::from_str::<Vec<Value>>(&result_str)
             .map(|v| v.len())
             .unwrap_or(0);
