@@ -247,6 +247,22 @@
             return d.innerHTML;
         }
 
+
+        function rowsToCsv(rows) {
+            if (rows.length === 0) return '';
+            const keys = Object.keys(rows[0]);
+            const escapeCsv = (v) => {
+                if (v === null || v === undefined) return '';
+                const s = typeof v === 'object' ? JSON.stringify(v) : String(v);
+                if (s.includes(',') || s.includes('"') || s.includes('\n')) {
+                    return '"' + s.replace(/"/g, '""') + '"';
+                }
+                return s;
+            };
+            const header = keys.map(escapeCsv).join(',');
+            const body = rows.map(r => keys.map(k => escapeCsv(r[k])).join(',')).join('\n');
+            return header + '\n' + body;
+        }
         function renderResultAsTable(rows) {
             if (rows.length === 0) return '<div class="text-gray-500 italic p-2">No rows returned.</div>';
             if (typeof rows[0] !== 'object' || rows[0] === null) {
@@ -277,6 +293,7 @@
                 html += '</tr>';
             }
             html += '</tbody></table></div>';
+            html += '<button class="csv-copy-btn mt-1 px-2 py-0.5 text-xs bg-[#21262d] hover:bg-[#30363d] text-gray-400 border border-[#30363d] rounded transition-colors" data-csv="' + escapeHtml(JSON.stringify(rowsToCsv(rows))) + '">Copy CSV</button>';
             return html;
         }
 
@@ -542,6 +559,20 @@
         document.getElementById('btn-close-history').addEventListener('click', () => {
             sidebar.classList.add('translate-x-full');
             setTimeout(() => sidebar.style.display = 'none', 200);
+        });
+
+        // CSV copy delegated handler
+        document.addEventListener('click', function (e) {
+            const btn = e.target.closest('.csv-copy-btn');
+            if (!btn) return;
+            const csv = (() => {try {return JSON.parse(btn.getAttribute('data-csv') || '');} catch (_) {return '';} })();
+            navigator.clipboard.writeText(csv).then(() => {
+                btn.textContent = 'Copied!';
+                setTimeout(() => btn.textContent = 'Copy CSV', 1500);
+            }).catch(() => {
+                btn.textContent = 'Copy failed';
+                setTimeout(() => btn.textContent = 'Copy CSV', 1500);
+            });
         });
     </script>
 </body>
