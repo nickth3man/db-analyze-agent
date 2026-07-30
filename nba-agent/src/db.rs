@@ -6,8 +6,8 @@ use std::sync::Arc;
 
 #[derive(Clone)]
 pub struct DbContext {
-    conn: Arc<Mutex<Connection>>,
-    cache: Arc<Mutex<std::collections::HashMap<String, CachedResult>>>,
+    pool: r2d2::Pool<duckdb::DuckdbConnectionManager>,
+    cache: moka::sync::Cache<String, Vec<Value>>,
     history: Arc<Mutex<Vec<DbHistoryEntry>>>,
 }
 
@@ -20,10 +20,6 @@ pub struct DbHistoryEntry {
     pub success: bool,
 }
 
-struct CachedResult {
-    rows: Vec<Value>,
-    inserted_at: std::time::Instant,
-}
 
 #[derive(Debug, Serialize, Deserialize)]
 pub struct TableSchemaInfo {
@@ -94,10 +90,18 @@ pub struct InsightsResponse {
 impl DbContext {
     pub fn new(path: &str) -> DuckResult<Self> {
         let config = Config::default().access_mode(AccessMode::ReadOnly)?;
-        let conn = Connection::open_with_flags(path, config)?;
+        let manager = duckdb::DuckdbConnectionManager::file_with_flags(path, config)?;
+        let pool = r2d2::Pool::builder()
+            .max_size(16)
+            .build(manager)
+            .map_err(|e| duckdb::Error::DuckDBFailure(duckdb::ffi::Error::new(1), Some(e.to_string())))?;
+        let cache = moka::sync::Cache::builder()
+            .max_capacity(200)
+            .time_to_live(std::time::Duration::from_secs(60))
+            .build();
         Ok(Self {
-            conn: Arc::new(Mutex::new(conn)),
-            cache: Arc::new(Mutex::new(std::collections::HashMap::new())),
+            pool,
+            cache,
             history: Arc::new(Mutex::new(Vec::new())),
         })
     }
@@ -112,19 +116,14 @@ impl DbContext {
         let query_saved = query.clone();
         let max_rows = max_rows_opt.unwrap_or(50);
         let cache_key = format!("{}|{}", query.trim(), max_rows);
-        // Check cache
-        {
-            let cache = self.cache.lock();
-            if let Some(entry) = cache.get(&cache_key) {
-                if entry.inserted_at.elapsed().as_secs() < 60 {
-                    return Ok(entry.rows.clone());
-                }
-            }
+        // Check cache (moka handles TTL and concurrency internally)
+        if let Some(cached) = self.cache.get(&cache_key) {
+            return Ok(cached);
         }
 
-        let conn_arc = self.conn.clone();
+        let pool = self.pool.clone();
         let results = tokio::task::spawn_blocking(move || -> anyhow::Result<Vec<Value>> {
-            let conn = conn_arc.lock();
+            let conn = pool.get()?;
             let mut stmt = conn.prepare(&query)?;
 
             // 1. Collect row values
@@ -196,23 +195,8 @@ impl DbContext {
             Ok(results)
         })
         .await??;
-        // Cache successful results (evict oldest if over 100 entries)
-        {
-            let mut cache = self.cache.lock();
-            if cache.len() >= 100 {
-                // Remove the oldest entry by TTL
-                let oldest_key = cache.iter()
-                    .min_by_key(|(_, v)| v.inserted_at)
-                    .map(|(k, _)| k.clone());
-                if let Some(key) = oldest_key {
-                    cache.remove(&key);
-                }
-            }
-            cache.insert(cache_key, CachedResult {
-                rows: results.clone(),
-                inserted_at: std::time::Instant::now(),
-            });
-        }
+        // Cache successful results in moka (automatically evicts according to 60s TTL and max 200 items capacity)
+        self.cache.insert(cache_key, results.clone());
         // Record to history
         {
             let entry = DbHistoryEntry {
@@ -289,11 +273,11 @@ impl DbContext {
 
     /// List tables matching optional prefix or pattern
     pub async fn list_tables(&self, pattern_opt: Option<String>) -> anyhow::Result<Vec<String>> {
-        let conn_arc = self.conn.clone();
+        let pool = self.pool.clone();
         let pattern = pattern_opt.unwrap_or_else(|| "%".to_string());
 
         let tables = tokio::task::spawn_blocking(move || -> anyhow::Result<Vec<String>> {
-            let conn = conn_arc.lock();
+            let conn = pool.get()?;
             let mut stmt = conn.prepare(
                 "SELECT table_name FROM information_schema.tables WHERE table_schema='main' AND table_name LIKE ? ORDER BY table_name LIMIT 100;",
             )?;
@@ -312,11 +296,11 @@ impl DbContext {
 
     /// Search across table names and column names matching a keyword
     pub async fn search_tables(&self, keyword: String) -> anyhow::Result<SearchResult> {
-        let conn_arc = self.conn.clone();
+        let pool = self.pool.clone();
         let kw_lower = keyword.to_lowercase();
 
         let search_res = tokio::task::spawn_blocking(move || -> anyhow::Result<SearchResult> {
-            let conn = conn_arc.lock();
+            let conn = pool.get()?;
 
             // Search table names
             let mut stmt = conn.prepare(
@@ -354,66 +338,14 @@ impl DbContext {
 
     /// Describe a specific table (schema + 3 sample rows)
     pub async fn describe_table(&self, table_name: String) -> anyhow::Result<TableSchemaInfo> {
-        let conn_arc = self.conn.clone();
+        let pool = self.pool.clone();
         let tbl = table_name.clone();
 
         let info = tokio::task::spawn_blocking(move || -> anyhow::Result<TableSchemaInfo> {
-            let conn = conn_arc.lock();
+            let conn = pool.get()?;
 
-            let mut stmt = conn.prepare(
-                "SELECT column_name, data_type, is_nullable FROM information_schema.columns WHERE table_schema='main' AND table_name=? ORDER BY ordinal_position;",
-            )?;
-            let mut rows = stmt.query([&tbl])?;
-            let mut columns = Vec::new();
-            while let Some(row) = rows.next()? {
-                columns.push(ColumnInfo {
-                    name: row.get(0)?,
-                    data_type: row.get(1)?,
-                    is_nullable: row.get(2)?,
-                });
-            }
-
-            // Sample 3 rows
-            let sample_query = format!("SELECT * FROM \"{}\" LIMIT 3;", tbl.replace('"', "\"\""));
-            let mut sample_stmt = conn.prepare(&sample_query)?;
-            let mut raw_sample_rows = Vec::new();
-            {
-                let mut sample_rows_iter = sample_stmt.query([])?;
-                while let Some(row) = sample_rows_iter.next()? {
-                    let mut row_vals = Vec::new();
-                    let mut idx = 0;
-                    while let Ok(val_ref) = row.get_ref(idx) {
-                        let val = match val_ref {
-                            ValueRef::Null => Value::Null,
-                            ValueRef::Boolean(b) => json!(b),
-                            ValueRef::Int(v) => json!(v),
-                            ValueRef::BigInt(v) => json!(v),
-                            ValueRef::Float(f) => json!(f),
-                            ValueRef::Double(d) => json!(d),
-                            ValueRef::Text(t) => json!(String::from_utf8_lossy(t)),
-                            _ => json!("<val>"),
-                        };
-                        row_vals.push(val);
-                        idx += 1;
-                    }
-                    raw_sample_rows.push(row_vals);
-                }
-            } // `sample_rows_iter` dropped here!
-
-            let col_count = sample_stmt.column_count();
-            let col_names: Vec<String> = (0..col_count)
-                .map(|i| sample_stmt.column_name(i).map(|s| s.to_string()).unwrap_or_default())
-                .collect();
-
-            let mut sample_rows = Vec::new();
-            for row_vals in raw_sample_rows {
-                let mut map = Map::new();
-                for (i, name) in col_names.iter().enumerate() {
-                    let val = row_vals.get(i).cloned().unwrap_or(Value::Null);
-                    map.insert(name.clone(), val);
-                }
-                sample_rows.push(Value::Object(map));
-            }
+            let columns = Self::get_columns_from_info(&conn, &tbl)?;
+            let sample_rows = Self::get_sample_rows_json(&conn, &tbl)?;
 
             Ok(TableSchemaInfo {
                 table_name: tbl,
@@ -427,6 +359,73 @@ impl DbContext {
         Ok(info)
     }
 
+    /// Fetch column metadata from information_schema for a table.
+    fn get_columns_from_info(conn: &Connection, table_name: &str) -> anyhow::Result<Vec<ColumnInfo>> {
+        let mut stmt = conn.prepare(
+            "SELECT column_name, data_type, is_nullable FROM information_schema.columns WHERE table_schema='main' AND table_name=? ORDER BY ordinal_position;",
+        )?;
+        let mut rows = stmt.query([table_name])?;
+        let mut columns = Vec::new();
+        while let Some(row) = rows.next()? {
+            columns.push(ColumnInfo {
+                name: row.get(0)?,
+                data_type: row.get(1)?,
+                is_nullable: row.get(2)?,
+            });
+        }
+        Ok(columns)
+    }
+
+    /// Fetch sample rows from a table and return them as JSON objects keyed by column name.
+    fn get_sample_rows_json(conn: &Connection, table_name: &str) -> anyhow::Result<Vec<Value>> {
+        let sample_query = format!("SELECT * FROM \"{}\" LIMIT 3;", table_name.replace('"', "\"\""));
+        let mut sample_stmt = conn.prepare(&sample_query)?;
+
+        // Collect raw values per row
+        let mut raw_rows = Vec::new();
+        {
+            let mut iter = sample_stmt.query([])?;
+            while let Some(row) = iter.next()? {
+                let mut vals = Vec::new();
+                let mut idx = 0;
+                while let Ok(val_ref) = row.get_ref(idx) {
+                    let val = match val_ref {
+                        ValueRef::Null => Value::Null,
+                        ValueRef::Boolean(b) => json!(b),
+                        ValueRef::Int(v) => json!(v),
+                        ValueRef::BigInt(v) => json!(v),
+                        ValueRef::Float(f) => json!(f),
+                        ValueRef::Double(d) => json!(d),
+                        ValueRef::Text(t) => json!(String::from_utf8_lossy(t)),
+                        _ => json!("<val>"),
+                    };
+                    vals.push(val);
+                    idx += 1;
+                }
+                raw_rows.push(vals);
+            }
+        } // `iter` dropped here!
+
+        // Build JSON objects keyed by column name
+        let col_names: Vec<String> = (0..sample_stmt.column_count())
+            .map(|i| sample_stmt.column_name(i).map(String::from).unwrap_or_default())
+            .collect();
+
+        let sample_rows = raw_rows
+            .into_iter()
+            .map(|vals| {
+                let mut map = Map::new();
+                for (i, name) in col_names.iter().enumerate() {
+                    let val = vals.get(i).cloned().unwrap_or(Value::Null);
+                    map.insert(name.clone(), val);
+                }
+                Value::Object(map)
+            })
+            .collect();
+
+        Ok(sample_rows)
+    }
+
     /// Run EXPLAIN to validate SQL syntax and get query plan without execution
     pub async fn explain_query(&self, query: String) -> anyhow::Result<String> {
         let explain_sql = format!("EXPLAIN {}", query);
@@ -437,13 +436,13 @@ impl DbContext {
     /// Build enriched schema with row counts, FK hints, date ranges, and sample values.
     /// Uses DuckDB's catalog-estimated row counts for speed (no table scans).
     pub async fn build_enriched_schema(&self, table_filter: Option<&[&str]>) -> anyhow::Result<EnrichedSchema> {
-        let conn_arc = self.conn.clone();
+        let pool = self.pool.clone();
         let filter: Vec<String> = table_filter
             .map(|f| f.iter().map(|s| s.to_string()).collect())
             .unwrap_or_default();
 
         tokio::task::spawn_blocking(move || -> anyhow::Result<EnrichedSchema> {
-            let conn = conn_arc.lock();
+            let conn = pool.get()?;
 
             // Get all table names with estimated row counts from DuckDB catalog (no scan)
             let mut all_tables_stmt = conn.prepare(
@@ -853,9 +852,60 @@ fn extract_between<'a>(haystack: &'a str, prefix: &str, suffix: &str) -> Option<
     Some(&remaining[..end])
 }
 
+use std::ops::ControlFlow;
+use sqlparser::ast::{Expr, Ident, VisitMut, VisitorMut};
+use sqlparser::dialect::DuckDbDialect;
+use sqlparser::parser::Parser;
+
+struct IdentReplacer<'a> {
+    old_name: &'a str,
+    new_name: &'a str,
+}
+
+impl VisitorMut for IdentReplacer<'_> {
+    type Break = ();
+
+    fn post_visit_expr(&mut self, expr: &mut Expr) -> ControlFlow<Self::Break> {
+        match expr {
+            Expr::Identifier(ident) => {
+                if ident.value.eq_ignore_ascii_case(self.old_name) {
+                    ident.value = self.new_name.to_string();
+                }
+            }
+            Expr::CompoundIdentifier(idents) => {
+                for ident in idents {
+                    if ident.value.eq_ignore_ascii_case(self.old_name) {
+                        ident.value = self.new_name.to_string();
+                    }
+                }
+            }
+            _ => {}
+        }
+        ControlFlow::Continue(())
+    }
+}
+
+fn replace_sql_ident_ast(sql: &str, old_name: &str, new_name: &str) -> Option<String> {
+    let dialect = DuckDbDialect {};
+    let mut statements = Parser::parse_sql(&dialect, sql).ok()?;
+    let mut replacer = IdentReplacer { old_name, new_name };
+    for stmt in &mut statements {
+        stmt.visit(&mut replacer);
+    }
+    Some(statements.iter().map(|s| s.to_string()).collect::<Vec<_>>().join("; "))
+}
+
 /// Replace an SQL identifier (column name) in the query, handling quoting.
-/// Skips replacements inside single-quoted string literals.
+/// Uses sqlparser AST parsing first, falling back to heuristic string replacement if parsing fails.
 fn replace_sql_ident(sql: &str, old_name: &str, new_name: &str) -> String {
+    if let Some(fixed) = replace_sql_ident_ast(sql, old_name, new_name) {
+        fixed
+    } else {
+        replace_sql_ident_heuristic(sql, old_name, new_name)
+    }
+}
+
+fn replace_sql_ident_heuristic(sql: &str, old_name: &str, new_name: &str) -> String {
     let mut result = String::with_capacity(sql.len() + new_name.len());
     let bytes = sql.as_bytes();
     let old_bytes = old_name.as_bytes();

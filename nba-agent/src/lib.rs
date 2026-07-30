@@ -13,7 +13,7 @@ use futures::StreamExt;
 use parking_lot::Mutex;
 use serde::{Deserialize, Serialize};
 use std::{convert::Infallible, sync::Arc, time::Instant};
-use tower_http::services::ServeDir;
+use tower_http::{compression::CompressionLayer, cors::CorsLayer, services::ServeDir};
 
 
 #[derive(Clone)]
@@ -90,7 +90,7 @@ pub async fn build_state(db: db::DbContext) -> anyhow::Result<AppState> {
 }
 
 pub fn build_router(state: AppState) -> Router {
-    let limiter = RateLimiter::new(60, 60); // 60 requests per 60 seconds
+    let limiter = RateLimiter::new(60, 60);
     Router::new()
         .route("/api/chat", post(chat_handler))
         .route("/api/chat/stream", get(chat_stream_handler))
@@ -103,6 +103,8 @@ pub fn build_router(state: AppState) -> Router {
         .route("/api/history", get(history_handler))
         .route("/api/stats", get(stats_handler))
         .route_layer(middleware::from_fn_with_state(limiter, rate_limit_middleware))
+        .layer(CompressionLayer::new())
+        .layer(CorsLayer::permissive())
         .fallback_service(ServeDir::new("static"))
         .with_state(state)
 }
@@ -181,8 +183,8 @@ async fn test_query_handler(State(state): State<AppState>) -> Json<TestQueryResp
         }
     }
 }
-async fn insights_handler(State(state): State<AppState>) -> Json<db::InsightsResponse> {
-    Json((*state.insights).clone())
+async fn insights_handler(State(state): State<AppState>) -> Json<Arc<db::InsightsResponse>> {
+    Json(state.insights.clone())
 }
 
 #[derive(Deserialize)]

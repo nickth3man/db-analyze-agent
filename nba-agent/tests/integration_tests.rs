@@ -595,3 +595,93 @@ fn test_validate_sql_rejects_update() {
 fn test_validate_sql_rejects_alter() {
     assert!(nba_agent::db::DbContext::validate_sql("ALTER TABLE game ADD COLUMN x INT;").is_err());
 }
+
+
+// ---------------------------------------------------------------------------
+// Concurrency and stream tests
+// ---------------------------------------------------------------------------
+
+use nba_agent::agent::Agent;
+use std::time::{Duration, Instant};
+
+/// Test that 5+ concurrent run_sql calls on a shared DbContext complete without deadlock.
+/// The DbContext wraps a parking_lot::Mutex<Connection>, so this validates the lock
+/// does not contend excessively or cause timeouts under realistic load.
+#[tokio::test]
+async fn test_concurrent_run_sql_calls_on_shared_db() {
+    let db = match get_test_db() {
+        Some(d) => d,
+        None => return,
+    };
+
+    let concurrent = 8;
+    let mut handles = Vec::with_capacity(concurrent);
+
+    let start = Instant::now();
+
+    for i in 0..concurrent {
+        let db_clone = db.clone();
+        let handle = tokio::spawn(async move {
+            let q = format!("SELECT game_id, team_id_home FROM game LIMIT 1 OFFSET {}; -- iteration {}", i % 5, i);
+            let result = db_clone.run_sql(q, Some(1)).await;
+            (i, result)
+        });
+        handles.push(handle);
+    }
+
+    let mut results = Vec::with_capacity(concurrent);
+    for handle in handles {
+        let (i, result) = handle.await.expect("test task panicked");
+        results.push((i, result));
+    }
+
+    let elapsed = start.elapsed();
+
+    assert!(elapsed < Duration::from_secs(10), "concurrent calls took {}ms — likely a deadlock", elapsed.as_millis());
+
+    let errors: Vec<_> = results.iter().filter(|(_, r)| r.is_err()).collect();
+    assert!(
+        errors.is_empty(),
+        "concurrent execution failed for {} out of {} calls: {:?}",
+        errors.len(),
+        concurrent,
+        errors.iter().map(|(_, r)| r.as_ref().unwrap_err().to_string()).collect::<Vec<_>>()
+    );
+}
+
+/// Test that describe_table still works after refactoring into get_columns_from_info
+/// and get_sample_rows_json sub-functions.
+#[tokio::test]
+async fn test_describe_table_refs_still_work_after_refactor() {
+    let db = match get_test_db() {
+        Some(d) => d,
+        None => return,
+    };
+
+    let info = db.describe_table("game".to_string()).await.unwrap();
+    assert!(!info.columns.is_empty());
+    assert!(!info.table_name.is_empty());
+    assert!(info.columns.iter().any(|c| c.name.starts_with("game")));
+    assert_eq!(info.sample_rows.len(), 3, "Expected 3 sample rows");
+
+    let first_row = &info.sample_rows[0];
+    assert!(first_row.is_object());
+    assert!(first_row.get("game_id").is_some());
+
+    // Verify idempotence
+    let info2 = db.describe_table("game".to_string()).await.unwrap();
+    assert_eq!(info.columns.len(), info2.columns.len());
+
+    // Concurrent describe_table calls should not deadlock
+    let db_clone = db.clone();
+    let table_name = "common_player_info".to_string();
+    let handle = tokio::spawn(async move {
+        db_clone.describe_table(table_name).await
+    });
+
+    let info_main = db.describe_table("team".to_string()).await.unwrap();
+    let info_spawned = handle.await.unwrap().unwrap();
+
+    assert!(!info_main.table_name.is_empty());
+    assert!(!info_spawned.table_name.is_empty());
+}
