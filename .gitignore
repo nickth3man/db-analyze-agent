@@ -1,0 +1,6 @@
+target/
+*.log
+.env
+data/*.duckdb
+data/*.duckdb.tmp
+*.bk

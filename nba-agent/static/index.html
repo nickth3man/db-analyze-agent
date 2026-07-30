@@ -1,0 +1,361 @@
+<!DOCTYPE html>
+<html lang="en">
+
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>NBA Analytical Data Agent</title>
+    <!-- Tailwind CSS CDN -->
+    <script src="https://cdn.tailwindcss.com"></script>
+    <!-- Chart.js for interactive visualizations -->
+    <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+    <!-- Marked.js for robust Markdown rendering -->
+    <script src="https://cdn.jsdelivr.net/npm/marked/marked.min.js"></script>
+    <style>
+        body {
+            background-color: #0d1117;
+            color: #c9d1d9;
+        }
+
+        .bg-agent {
+            background-color: #161b22;
+            border: 1px solid #30363d;
+        }
+
+        .bg-user {
+            background-color: #1f6feb;
+            color: #ffffff;
+        }
+
+        .tool-block {
+            background-color: #0d1117;
+            border: 1px solid #30363d;
+            border-radius: 0.5rem;
+        }
+
+        details>summary {
+            list-style: none;
+            cursor: pointer;
+        }
+
+        details>summary::-webkit-details-marker {
+            display: none;
+        }
+
+        pre {
+            white-space: pre-wrap;
+            word-wrap: break-word;
+        }
+
+        .prose table {
+            width: 100%;
+            border-collapse: collapse;
+            margin-top: 0.5rem;
+            margin-bottom: 0.5rem;
+        }
+
+        .prose th,
+        .prose td {
+            border: 1px solid #30363d;
+            padding: 0.5rem;
+            text-align: left;
+        }
+
+        .prose th {
+            background-color: #161b22;
+            color: #58a6ff;
+        }
+    </style>
+</head>
+
+<body class="flex flex-col h-screen font-sans">
+    <header class="p-4 border-b border-[#30363d] flex justify-between items-center bg-[#161b22] shadow-md">
+        <div class="flex items-center gap-3">
+            <div class="w-8 h-8 rounded-full bg-blue-600 flex items-center justify-center font-bold text-white text-sm">
+                🏀</div>
+            <div>
+                <h1 class="text-lg font-bold text-white tracking-wide">NBA Intelligence Agent</h1>
+                <div class="text-xs text-gray-400">DuckDB Warehouse (588 Tables) • OpenRouter `qwen/qwen3.7-flash`</div>
+            </div>
+        </div>
+        <div class="flex items-center gap-3">
+            <span id="session-badge"
+                class="text-xs bg-[#21262d] border border-[#30363d] px-3 py-1 rounded-full font-mono text-gray-400">
+                Session: <span id="session-id-display">active</span>
+            </span>
+            <button id="btn-new-chat" title="Start new session"
+                class="bg-[#21262d] hover:bg-[#30363d] text-gray-300 text-xs px-3 py-1.5 rounded-md border border-[#30363d] transition-colors flex items-center gap-1.5">
+                <svg class="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                    <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 4v16m8-8H4"></path>
+                </svg>
+                New Chat
+            </button>
+        </div>
+    </header>
+
+    <main class="flex-1 overflow-y-auto p-4 md:p-6 space-y-6 flex flex-col" id="chat-container">
+        <div class="flex flex-col self-start w-full max-w-4xl mx-auto space-y-4">
+            <div class="p-5 rounded-2xl bg-agent self-start max-w-3xl shadow-md border border-[#30363d]">
+                <div class="font-semibold text-white mb-2">Welcome to the NBA Data Intelligence Agent! 🏀📊</div>
+                <div class="text-sm text-gray-300 leading-relaxed space-y-2">
+                    <p>I have access to the complete 17GB NBA DuckDB warehouse, featuring 588 analytical tables covering
+                        player stats, shot charts, clutch performance, team history, play-by-play, and awards.</p>
+                    <p class="text-xs text-gray-400 font-mono">Try asking:</p>
+                    <ul class="list-disc list-inside text-xs text-blue-400 space-y-1 font-mono">
+                        <li>"Who are the top 5 all-time leaders in 3-pointers made?"</li>
+                        <li>"Show me LeBron James' career points by season as a bar chart."</li>
+                        <li>"Search tables for clutch metrics and summarize active players."</li>
+                    </ul>
+                </div>
+            </div>
+        </div>
+    </main>
+
+    <footer class="p-4 bg-[#161b22] border-t border-[#30363d]">
+        <form id="chat-form" class="max-w-4xl mx-auto flex gap-2">
+            <input type="text" id="message-input" required placeholder="Ask any NBA statistical question..."
+                class="flex-1 bg-[#0d1117] border border-[#30363d] rounded-lg px-4 py-3 focus:outline-none focus:border-blue-500 text-white shadow-sm placeholder-gray-500 text-sm md:text-base"
+                autocomplete="off" />
+            <button type="submit"
+                class="bg-[#1f6feb] hover:bg-[#388bfd] text-white font-medium px-6 py-3 rounded-lg transition-colors flex items-center justify-center min-w-[100px] shadow-sm">
+                <span id="btn-text">Send</span>
+                <svg id="btn-loader" class="animate-spin h-5 w-5 hidden" xmlns="http://www.w3.org/2000/svg" fill="none"
+                    viewBox="0 0 24 24">
+                    <circle class="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" stroke-width="4"></circle>
+                    <path class="opacity-75" fill="currentColor"
+                        d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z">
+                    </path>
+                </svg>
+            </button>
+        </form>
+    </footer>
+
+    <script>
+        let currentSessionId = localStorage.getItem('nba_agent_session') || crypto.randomUUID();
+        localStorage.setItem('nba_agent_session', currentSessionId);
+        document.getElementById('session-id-display').textContent = currentSessionId.substring(0, 8);
+
+        const form = document.getElementById('chat-form');
+        const input = document.getElementById('message-input');
+        const container = document.getElementById('chat-container').querySelector('.max-w-4xl');
+        const btnText = document.getElementById('btn-text');
+        const btnLoader = document.getElementById('btn-loader');
+        const btnNewChat = document.getElementById('btn-new-chat');
+
+        btnNewChat.addEventListener('click', async () => {
+            if (confirm('Start a new session and clear conversation history?')) {
+                await fetch('/api/reset', {
+                    method: 'POST',
+                    headers: {'Content-Type': 'application/json'},
+                    body: JSON.stringify({session_id: currentSessionId})
+                });
+                currentSessionId = crypto.randomUUID();
+                localStorage.setItem('nba_agent_session', currentSessionId);
+                document.getElementById('session-id-display').textContent = currentSessionId.substring(0, 8);
+                container.innerHTML = `
+                    <div class="p-4 rounded-xl bg-agent self-start max-w-3xl border border-[#30363d] text-sm text-gray-300">
+                        New session started! What would you like to explore next?
+                    </div>
+                `;
+            }
+        });
+
+        function addUserMessage(text) {
+            const wrapper = document.createElement('div');
+            wrapper.className = 'flex justify-end w-full';
+            const bubble = document.createElement('div');
+            bubble.className = 'p-3.5 px-5 rounded-2xl bg-user self-end max-w-2xl shadow-sm text-sm md:text-base leading-relaxed';
+            bubble.textContent = text;
+            wrapper.appendChild(bubble);
+            container.appendChild(wrapper);
+            scrollToBottom();
+        }
+
+        function createToolCallBlock(tool) {
+            const block = document.createElement('div');
+            block.className = 'tool-block my-3 overflow-hidden text-sm border border-[#30363d]';
+
+            const getToolBadgeColor = (name) => {
+                switch (name) {
+                    case 'run_sql': return 'bg-blue-900/40 text-blue-400 border-blue-700/50';
+                    case 'search_tables': return 'bg-purple-900/40 text-purple-400 border-purple-700/50';
+                    case 'describe_table': return 'bg-emerald-900/40 text-emerald-400 border-emerald-700/50';
+                    case 'explain_query': return 'bg-amber-900/40 text-amber-400 border-amber-700/50';
+                    case 'generate_chart': return 'bg-pink-900/40 text-pink-400 border-pink-700/50';
+                    default: return 'bg-gray-800 text-gray-300 border-gray-700';
+                }
+            };
+
+            const reasoningDetails = document.createElement('details');
+            reasoningDetails.open = true;
+            reasoningDetails.className = 'border-b border-[#30363d]';
+            reasoningDetails.innerHTML = `
+                <summary class="p-3 bg-[#161b22] hover:bg-[#21262d] flex items-center justify-between font-medium text-gray-300">
+                    <div class="flex items-center gap-2">
+                        <span class="px-2 py-0.5 rounded text-xs font-mono border ${getToolBadgeColor(tool.tool_name)}">${tool.tool_name}</span>
+                        <span class="text-xs text-gray-400">Reasoning</span>
+                    </div>
+                    <svg class="w-4 h-4 text-gray-400 transform transition-transform" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 5l7 7-7 7"></path></svg>
+                </summary>
+                <div class="p-4 text-gray-300 bg-[#0d1117] leading-relaxed border-t border-[#30363d] text-xs md:text-sm">
+                    ${tool.reasoning}
+                </div>
+            `;
+
+            const execDetails = document.createElement('details');
+            execDetails.open = true;
+            execDetails.innerHTML = `
+                <summary class="p-3 bg-[#161b22] hover:bg-[#21262d] flex items-center gap-2 font-medium text-gray-300 text-xs">
+                    <svg class="w-4 h-4 text-gray-400 transform transition-transform" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M10 20l4-16m4 4l4 4-4 4M6 16l-4-4 4-4"></path></svg>
+                    Parameters & Result
+                </summary>
+                <div class="p-4 bg-[#0d1117] font-mono text-xs overflow-x-auto border-t border-[#30363d] space-y-3">
+                    <div class="text-[#79c0ff]">${tool.query_or_params}</div>
+                    <pre class="text-gray-400 max-h-60 overflow-y-auto p-2 bg-[#161b22] rounded border border-[#30363d]">${tool.result}</pre>
+                </div>
+            `;
+
+            block.appendChild(reasoningDetails);
+            block.appendChild(execDetails);
+
+            // Render interactive chart if tool is generate_chart
+            if (tool.tool_name === 'generate_chart') {
+                try {
+                    const chartData = JSON.parse(tool.result);
+                    if (chartData.data_rows && chartData.data_rows.length > 0) {
+                        const chartContainer = document.createElement('div');
+                        chartContainer.className = 'p-4 bg-[#161b22] border-t border-[#30363d] rounded-b-lg';
+                        const canvas = document.createElement('canvas');
+                        canvas.className = 'w-full max-h-72';
+                        chartContainer.appendChild(canvas);
+                        block.appendChild(chartContainer);
+
+                        // Render chart using Chart.js
+                        setTimeout(() => {
+                            const keys = Object.keys(chartData.data_rows[0]);
+                            const labelKey = keys[0];
+                            const valKey = keys[1] || keys[0];
+
+                            const labels = chartData.data_rows.map(r => r[labelKey]);
+                            const values = chartData.data_rows.map(r => parseFloat(r[valKey]) || 0);
+
+                            new Chart(canvas, {
+                                type: chartData.chart_type || 'bar',
+                                data: {
+                                    labels: labels,
+                                    datasets: [{
+                                        label: chartData.title || valKey,
+                                        data: values,
+                                        backgroundColor: 'rgba(31, 111, 235, 0.6)',
+                                        borderColor: 'rgba(56, 139, 253, 1)',
+                                        borderWidth: 1.5
+                                    }]
+                                },
+                                options: {
+                                    responsive: true,
+                                    plugins: {
+                                        legend: {labels: {color: '#c9d1d9'}},
+                                        title: {display: true, text: chartData.title, color: '#ffffff'}
+                                    },
+                                    scales: {
+                                        x: {ticks: {color: '#8b949e'}, grid: {color: '#30363d'}},
+                                        y: {ticks: {color: '#8b949e'}, grid: {color: '#30363d'}}
+                                    }
+                                }
+                            });
+                        }, 50);
+                    }
+                } catch (e) {
+                    console.error('Failed to parse chart data:', e);
+                }
+            }
+
+            block.querySelectorAll('details').forEach(d => {
+                d.addEventListener('toggle', () => {
+                    const svg = d.querySelector('summary svg');
+                    if (svg) {
+                        if (d.open) svg.classList.add('rotate-90');
+                        else svg.classList.remove('rotate-90');
+                    }
+                });
+            });
+
+            return block;
+        }
+
+        function addAgentResponse(trace) {
+            const wrapper = document.createElement('div');
+            wrapper.className = 'w-full';
+            const inner = document.createElement('div');
+            inner.className = 'p-5 rounded-2xl bg-agent self-start w-full max-w-4xl shadow-md border border-[#30363d]';
+
+            trace.steps.forEach(step => {
+                if (step.content) {
+                    const contentDiv = document.createElement('div');
+                    contentDiv.className = 'mb-4 text-gray-200 leading-relaxed text-sm md:text-base';
+                    contentDiv.innerHTML = marked.parse(step.content);
+                    inner.appendChild(contentDiv);
+                }
+
+                step.tool_calls.forEach(tool => {
+                    inner.appendChild(createToolCallBlock(tool));
+                });
+            });
+
+            if (trace.final_answer) {
+                const finalDiv = document.createElement('div');
+                finalDiv.className = 'mt-4 text-gray-100 leading-relaxed prose prose-invert max-w-none text-sm md:text-base border-t border-[#30363d] pt-4';
+                finalDiv.innerHTML = marked.parse(trace.final_answer);
+                inner.appendChild(finalDiv);
+            }
+
+            wrapper.appendChild(inner);
+            container.appendChild(wrapper);
+            scrollToBottom();
+        }
+
+        function scrollToBottom() {
+            const main = document.getElementById('chat-container');
+            main.scrollTop = main.scrollHeight;
+        }
+
+        function setLoading(isLoading) {
+            input.disabled = isLoading;
+            btnText.classList.toggle('hidden', isLoading);
+            btnLoader.classList.toggle('hidden', !isLoading);
+        }
+
+        form.addEventListener('submit', async (e) => {
+            e.preventDefault();
+            const message = input.value.trim();
+            if (!message) return;
+
+            addUserMessage(message);
+            input.value = '';
+            setLoading(true);
+
+            try {
+                const response = await fetch('/api/chat', {
+                    method: 'POST',
+                    headers: {'Content-Type': 'application/json'},
+                    body: JSON.stringify({
+                        session_id: currentSessionId,
+                        message: message
+                    })
+                });
+
+                if (!response.ok) throw new Error('Network response was not ok');
+
+                const data = await response.json();
+                addAgentResponse(data);
+            } catch (error) {
+                console.error('Error:', error);
+                alert('An error occurred processing your query. Check the browser console.');
+            } finally {
+                setLoading(false);
+            }
+        });
+    </script>
+</body>
+
+</html>
