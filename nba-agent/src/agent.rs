@@ -172,7 +172,9 @@ impl Agent {
             BEST PRACTICES:\n\
             • Use schema context (row counts, FK→arrows, sample values) for accurate JOINs.\n\
             • FK columns (ending in _id) reference the same-named table.\n\
-            • If a query fails, read 'Candidate bindings' for correct column names.\n\n\
+            • If a query fails, read 'Candidate bindings' for correct column names.\n\
+            • End your response with 2-3 follow-up questions the user might ask next.\n\
+              Format each as: SUGGESTED: <question> on its own line after your main answer.\n\n\
             {}",
             format!("{}\n\n{}", self.insights_brief, self.schema_summary)
         )

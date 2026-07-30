@@ -401,15 +401,42 @@
             });
 
             if (trace.final_answer) {
+                // Strip SUGGESTED: lines from the final answer for display
+                const lines = trace.final_answer.split('\n');
+                const displayLines = [];
+                const suggestions = [];
+                for (const line of lines) {
+                    const match = line.match(/^SUGGESTED:\s*(.+)/i);
+                    if (match) {
+                        suggestions.push(match[1].trim());
+                    } else {
+                        displayLines.push(line);
+                    }
+                }
+
                 const finalDiv = document.createElement('div');
                 finalDiv.className = 'mt-4 text-gray-100 leading-relaxed prose prose-invert max-w-none text-sm md:text-base border-t border-[#30363d] pt-4';
-                finalDiv.innerHTML = marked.parse(trace.final_answer);
+                finalDiv.innerHTML = marked.parse(displayLines.join('\n'));
                 inner.appendChild(finalDiv);
-            }
 
-            wrapper.appendChild(inner);
-            container.appendChild(wrapper);
-            scrollToBottom();
+                // Render follow-up suggestion chips
+                if (suggestions.length > 0) {
+                    const chipsDiv = document.createElement('div');
+                    chipsDiv.className = 'mt-3 flex flex-wrap gap-2';
+                    chipsDiv.innerHTML = '<span class="text-xs text-gray-500 w-full">Follow-up questions:</span>';
+                    for (const s of suggestions) {
+                        const chip = document.createElement('button');
+                        chip.className = 'px-3 py-1 text-xs bg-[#21262d] hover:bg-[#30363d] text-blue-400 border border-[#30363d] rounded-full transition-colors cursor-pointer';
+                        chip.textContent = s;
+                        chip.onclick = () => {
+                            document.getElementById('message-input').value = s;
+                            document.getElementById('chat-form').dispatchEvent(new Event('submit'));
+                        };
+                        chipsDiv.appendChild(chip);
+                    }
+                    inner.appendChild(chipsDiv);
+                }
+            }
         }
 
         function scrollToBottom() {
