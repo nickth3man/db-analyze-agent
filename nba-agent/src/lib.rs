@@ -17,6 +17,7 @@ pub struct AppState {
     pub agent: Arc<agent::Agent>,
     pub db: db::DbContext,
     pub insights: Arc<db::InsightsResponse>,
+    pub started_at: std::time::Instant,
 }
 
 #[derive(Deserialize)]
@@ -46,7 +47,7 @@ pub async fn build_state(db: db::DbContext) -> anyhow::Result<AppState> {
     let insights = Arc::new(db.generate_insights().await);
     let insights_brief = db::DbContext::format_insights_for_prompt(&insights);
     let agent = Arc::new(agent::Agent::new(db.clone(), insights_brief).await?);
-    Ok(AppState { agent, db, insights })
+    Ok(AppState { agent, db, insights, started_at: std::time::Instant::now() })
 }
 
 pub fn build_router(state: AppState) -> Router {
@@ -60,6 +61,7 @@ pub fn build_router(state: AppState) -> Router {
         .route("/api/export", get(export_handler))
         .route("/api/sessions", get(sessions_handler))
         .route("/api/history", get(history_handler))
+        .route("/api/stats", get(stats_handler))
         .fallback_service(ServeDir::new("static"))
         .with_state(state)
 }
@@ -170,4 +172,21 @@ async fn sessions_handler(State(state): State<AppState>) -> Json<Vec<serde_json:
 
 async fn history_handler(State(state): State<AppState>) -> Json<Vec<db::DbHistoryEntry>> {
     Json(state.db.list_history())
+}
+
+#[derive(Serialize)]
+struct StatsResponse {
+    uptime_secs: u64,
+    active_sessions: usize,
+    total_queries: usize,
+    db_tables: usize,
+}
+
+async fn stats_handler(State(state): State<AppState>) -> Json<StatsResponse> {
+    Json(StatsResponse {
+        uptime_secs: state.started_at.elapsed().as_secs(),
+        active_sessions: state.agent.list_sessions().len(),
+        total_queries: state.db.list_history().len(),
+        db_tables: state.insights.total_tables,
+    })
 }

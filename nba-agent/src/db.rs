@@ -88,6 +88,7 @@ pub struct InsightsResponse {
     pub generated_at: String,
     pub total_queries: usize,
     pub successful: usize,
+    pub total_tables: usize,
 }
 
 impl DbContext {
@@ -674,12 +675,21 @@ impl DbContext {
 
         let total = cards.len();
         let successful = cards.iter().filter(|c| c.error.is_none()).count();
+        let total_tables = self.count_tables().await;
         InsightsResponse {
             cards,
             generated_at: format!("{}", std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_secs()).unwrap_or(0)),
             total_queries: total,
             successful,
+            total_tables,
         }
+    }
+
+    async fn count_tables(&self) -> usize {
+        self.run_sql("SELECT COUNT(*) as val FROM information_schema.tables WHERE table_schema='main';".to_string(), Some(1)).await
+            .ok()
+            .and_then(|rows| rows.first()?.get("val")?.as_i64())
+            .unwrap_or(0) as usize
     }
 
     async fn insight_card(
