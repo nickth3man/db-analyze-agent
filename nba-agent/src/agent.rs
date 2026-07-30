@@ -73,7 +73,15 @@ impl Agent {
             .map_err(|_| anyhow!("Neither OPENROUTER_API_KEY nor OPENAI_API_KEY set"))?;
 
         let http_client = Client::builder().build()?;
-        let schema_summary = db.get_schema_summary().await?;
+        let key_tables: Vec<&str> = vec![
+            "player", "team", "game", "common_player_info", "player_game_stats",
+            "play_by_play", "line_score", "draft_history", "team_history", "team_details",
+            "game_summary", "player_career_stats", "player_clutch_stats", "player_shooting_stats",
+            "player_defensive_stats", "player_passing_stats", "player_rebounding_stats",
+            "team_stats", "award", "coach", "series_post",
+        ];
+        let enriched = db.build_enriched_schema(Some(&key_tables)).await?;
+        let schema_summary = DbContext::format_enriched_schema(&enriched);
 
         Ok(Self { http_client, api_key, db, schema_summary, sessions: Arc::new(RwLock::new(HashMap::new())) })
     }
@@ -96,8 +104,10 @@ impl Agent {
             5. `explain_query(query)` - Check SQL syntax and get execution plan using EXPLAIN.\n\
             6. `generate_chart(chart_type, title, sql_query)` - Format query results into a chart visualization specification.\n\n\
             BEST PRACTICES:\n\
-            • Provide analytical reasoning in the `reasoning` parameter for every tool call.\n\
-            • If a query fails or produces empty results unexpectedly, self-correct and re-try with a refined query.\n\
+            • Use the schema context below — it includes row counts, FK relationships (→ arrows), and sample values (e.g.).\n\
+            • FK columns (ending in _id) reference the table of the same name (e.g. team_id → team). Use JOINs on these.\n\
+            • If a query fails, read the error message's 'Candidate bindings' to find the correct column names.\n\
+            • For complex questions, use search_tables first to discover relevant tables beyond those listed below.\n\
             • Synthesize numerical data into concise analytical narrative insights.\n\n\
             {}",
             self.schema_summary

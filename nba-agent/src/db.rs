@@ -30,6 +30,32 @@ pub struct SearchResult {
     pub matched_columns: Vec<(String, String)>, // (table, column)
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct EnrichedColumn {
+    pub name: String,
+    pub data_type: String,
+    pub is_nullable: bool,
+    pub is_fk_candidate: bool,
+    pub referenced_table: Option<String>,
+    pub sample_values: Vec<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct EnrichedTable {
+    pub table_name: String,
+    pub row_count: i64,
+    pub column_count: usize,
+    pub columns: Vec<EnrichedColumn>,
+    pub date_range: Option<(String, String)>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct EnrichedSchema {
+    pub tables: Vec<EnrichedTable>,
+    pub total_tables: usize,
+    pub fk_relationships: Vec<(String, String, String)>, // (from_table, from_col, to_table)
+}
+
 impl DbContext {
     pub fn new(path: &str) -> DuckResult<Self> {
         let config = Config::default().access_mode(AccessMode::ReadOnly)?;
@@ -264,6 +290,248 @@ impl DbContext {
         let explain_sql = format!("EXPLAIN {}", query);
         let rows = self.run_sql(explain_sql, Some(20)).await?;
         Ok(serde_json::to_string_pretty(&rows)?)
+    }
+
+    /// Build enriched schema with row counts, FK hints, date ranges, and sample values.
+    /// Uses DuckDB's catalog-estimated row counts for speed (no table scans).
+    pub async fn build_enriched_schema(&self, table_filter: Option<&[&str]>) -> anyhow::Result<EnrichedSchema> {
+        let conn_arc = self.conn.clone();
+        let filter: Vec<String> = table_filter
+            .map(|f| f.iter().map(|s| s.to_string()).collect())
+            .unwrap_or_default();
+
+        tokio::task::spawn_blocking(move || -> anyhow::Result<EnrichedSchema> {
+            let conn = conn_arc.lock();
+
+            // Get all table names with estimated row counts from DuckDB catalog (no scan)
+            let mut all_tables_stmt = conn.prepare(
+                "SELECT table_name, estimated_size FROM duckdb_tables() WHERE schema_name='main' AND estimated_size >= 0 ORDER BY estimated_size DESC;"
+            )?;
+            let mut table_rows = all_tables_stmt.query([])?;
+            let mut table_names: Vec<String> = Vec::new();
+            let mut estimated_counts: std::collections::HashMap<String, i64> = std::collections::HashMap::new();
+            while let Some(row) = table_rows.next()? {
+                let name: String = row.get(0)?;
+                let est: i64 = row.get(1)?;
+                estimated_counts.insert(name.clone(), est);
+                table_names.push(name);
+            }
+            drop(table_rows);
+            drop(all_tables_stmt);
+
+            // Filter or take key tables if filter provided
+            let target_tables: Vec<String> = if filter.is_empty() {
+                table_names
+            } else {
+                filter.into_iter().filter(|t| table_names.contains(t)).collect()
+            };
+
+            let mut tables = Vec::new();
+            let mut fk_relationships = Vec::new();
+
+            for tbl_name in &target_tables {
+                // Use estimated row count from catalog (fast, no scan)
+                let count = estimated_counts.get(tbl_name).copied().unwrap_or(-1);
+
+                // Column info
+                let mut col_stmt = match conn.prepare(
+                    "SELECT column_name, data_type, is_nullable FROM information_schema.columns WHERE table_schema='main' AND table_name=? ORDER BY ordinal_position;"
+                ) {
+                    Ok(s) => s,
+                    Err(e) => {
+                        tracing::warn!("Failed to prepare column query for table `{}`: {}", tbl_name, e);
+                        continue;
+                    }
+                };
+                let mut col_rows = match col_stmt.query([tbl_name.as_str()]) {
+                    Ok(r) => r,
+                    Err(e) => {
+                        tracing::warn!("Failed to query columns for table `{}`: {}", tbl_name, e);
+                        continue;
+                    }
+                };
+                let mut columns = Vec::new();
+                while let Some(row) = col_rows.next()? {
+                    let col_name: String = row.get(0)?;
+                    let data_type: String = row.get(1)?;
+                    let is_nullable_str: String = row.get(2)?;
+
+                    // Detect FK: ends with _id, contains _id_ (e.g. team_id_home), or ends with _code
+                    let has_id = col_name.ends_with("_id") || col_name.contains("_id_");
+                    let is_fk = has_id || col_name.ends_with("_code");
+                    let referenced_table = if is_fk {
+                        // Extract table name: everything before the last _id or _code
+                        let base = if let Some(pos) = col_name.rfind("_id") {
+                            &col_name[..pos]
+                        } else {
+                            col_name.trim_end_matches("_code")
+                        };
+                        Some(base.to_string())
+                    } else {
+                        None
+                    };
+
+                    // Sample distinct values (top 3) for key-like columns
+                    let sample_values: Vec<String> = if is_fk || col_name.contains("name") || col_name.contains("type") {
+                        let q = format!(
+                            "SELECT DISTINCT \"{}\" FROM \"{}\" LIMIT 3;",
+                            col_name.replace('"', "\"\""),
+                            tbl_name.replace('"', "\"\"")
+                        );
+                        match conn.prepare(&q) {
+                            Ok(mut s) => match s.query([]) {
+                                Ok(mut rows_iter) => {
+                                    let mut vals = Vec::new();
+                                    while let Some(r) = rows_iter.next().ok().flatten() {
+                                        let v: String = r.get(0).unwrap_or_else(|_| "<err>".to_string());
+                                        vals.push(v);
+                                    }
+                                    vals
+                                }
+                                Err(e) => {
+                                    tracing::warn!("Sample query failed for `{}.{}`: {}", tbl_name, col_name, e);
+                                    vec![]
+                                }
+                            },
+                            Err(e) => {
+                                tracing::warn!("Sample prepare failed for `{}.{}`: {}", tbl_name, col_name, e);
+                                vec![]
+                            }
+                        }
+                    } else {
+                        vec![]
+                    };
+
+                    // Track FK relationship
+                    if let Some(ref rt) = referenced_table {
+                        if target_tables.contains(rt) {
+                            fk_relationships.push((tbl_name.clone(), col_name.clone(), rt.clone()));
+                        }
+                    }
+
+                    columns.push(EnrichedColumn {
+                        name: col_name,
+                        data_type,
+                        is_nullable: is_nullable_str == "YES",
+                        is_fk_candidate: is_fk,
+                        referenced_table,
+                        sample_values,
+                    });
+                }
+                drop(col_rows);
+                drop(col_stmt);
+
+                // Date range detection: look for date/timestamp columns
+                let date_range = if let Some(date_col) = columns.iter().find(|c| {
+                    c.name.contains("date") || c.name.contains("_at") || c.name.contains("time")
+                }) {
+                    let q = format!(
+                        "SELECT MIN(\"{}\")::VARCHAR, MAX(\"{}\")::VARCHAR FROM \"{}\";",
+                        date_col.name, date_col.name,
+                        tbl_name.replace('"', "\"\"")
+                    );
+                    match conn.query_row(&q, [], |row| {
+                        Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
+                    }) {
+                        Ok((min_s, max_s)) => Some((min_s, max_s)),
+                        Err(e) => {
+                            tracing::warn!("Date range query failed for `{}`: {}", tbl_name, e);
+                            None
+                        }
+                    }
+                } else {
+                    None
+                };
+
+                tables.push(EnrichedTable {
+                    table_name: tbl_name.clone(),
+                    row_count: count,
+                    column_count: columns.len(),
+                    columns,
+                    date_range,
+                });
+            }
+
+            Ok(EnrichedSchema {
+                total_tables: target_tables.len(),
+                tables,
+                fk_relationships,
+            })
+        })
+        .await?
+    }
+
+    /// Format enriched schema into a concise summary for the LLM system prompt.
+    /// Caps to top-20 tables by row count to keep the prompt manageable.
+    pub fn format_enriched_schema(schema: &EnrichedSchema) -> String {
+        fn fmt_num(n: i64) -> String {
+            if n < 0 {
+                return "?".to_string();
+            }
+            if n < 1000 {
+                return n.to_string();
+            }
+            let s = n.to_string();
+            let len = s.len();
+            let mut out = String::with_capacity(len + len / 3);
+            for (i, c) in s.chars().enumerate() {
+                if i > 0 && (len - i) % 3 == 0 {
+                    out.push(',');
+                }
+                out.push(c);
+            }
+            out
+        }
+
+        let mut out = String::new();
+        out.push_str(&format!("Database Overview: {} tables\n\n", schema.total_tables));
+
+        // Top tables by row count
+        let mut sorted: Vec<&EnrichedTable> = schema.tables.iter().collect();
+        sorted.sort_by_key(|t| -t.row_count);
+        out.push_str("Largest tables by row count:\n");
+        for t in sorted.iter().take(15) {
+            out.push_str(&format!("  • `{}` — {} rows, {} cols\n", t.table_name, fmt_num(t.row_count), t.column_count));
+        }
+
+        // FK relationships (capped)
+        if !schema.fk_relationships.is_empty() {
+            out.push_str("\nKey foreign key relationships (JOIN paths):\n");
+            for (from_t, from_c, to_t) in schema.fk_relationships.iter().take(20) {
+                out.push_str(&format!("  • `{}.{}` → `{}`\n", from_t, from_c, to_t));
+            }
+        }
+
+        // Detailed schemas: top 20 tables by row count
+        out.push_str("\n--- Key Table Schemas (top 20 by row count) ---\n");
+        let detailed: Vec<&&EnrichedTable> = sorted.iter().filter(|t| t.row_count > 0).take(20).collect();
+        for t in &detailed {
+            out.push_str(&format!("\nTable `{}` ({} rows, {} columns):\n",
+                t.table_name, fmt_num(t.row_count), t.column_count));
+            if let Some((min_d, max_d)) = &t.date_range {
+                out.push_str(&format!("  Date range: {} → {}\n", min_d, max_d));
+            }
+            for col in &t.columns {
+                let mut flags = String::new();
+                if col.is_fk_candidate {
+                    flags.push_str(" [FK");
+                    if let Some(ref rt) = col.referenced_table {
+                        flags.push_str(&format!("→{}", rt));
+                    }
+                    flags.push(']');
+                }
+                if !col.sample_values.is_empty() {
+                    flags.push_str(&format!(" e.g.({})", col.sample_values.join(", ")));
+                }
+                out.push_str(&format!("  - {}: {}{}{}\n",
+                    col.name, col.data_type,
+                    if col.is_nullable { " NULL?" } else { "" },
+                    flags,
+                ));
+            }
+        }
+
+        out
     }
 
     /// Get curated schema context overview for key entities

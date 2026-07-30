@@ -262,3 +262,96 @@ async fn test_count_query_returns_integer() {
     let val = &rows[0]["n"];
     assert!(val.is_number(), "COUNT should return a number, got {:?}", val);
 }
+
+// ---------------------------------------------------------------------------
+// Enriched schema tests
+// ---------------------------------------------------------------------------
+
+#[tokio::test]
+async fn test_build_enriched_schema_with_filter() {
+    let db = match get_test_db() {
+        Some(d) => d,
+        None => return,
+    };
+    let key_tables: &[&str] = &["game", "player", "team"];
+    let schema = db.build_enriched_schema(Some(key_tables)).await.unwrap();
+    assert!(schema.total_tables >= 3, "Should find at least 3 key tables");
+    assert!(schema.tables.iter().any(|t| t.table_name == "game"), "Should have game table");
+    assert!(schema.tables.iter().any(|t| t.table_name == "player"), "Should have player table");
+    // game table should have rows
+    let game = schema.tables.iter().find(|t| t.table_name == "game").unwrap();
+    assert!(game.row_count > 0, "game table should have rows");
+    assert!(!game.columns.is_empty(), "game table should have columns");
+}
+
+#[tokio::test]
+async fn test_enriched_schema_has_fk_hints() {
+    let db = match get_test_db() {
+        Some(d) => d,
+        None => return,
+    };
+    let key_tables: &[&str] = &["game", "player", "team", "common_player_info"];
+    let schema = db.build_enriched_schema(Some(key_tables)).await.unwrap();
+    // game table columns ending in _id should be FK candidates
+    let game = schema.tables.iter().find(|t| t.table_name == "game").unwrap();
+    let fk_cols: Vec<_> = game.columns.iter().filter(|c| c.is_fk_candidate).collect();
+    assert!(!fk_cols.is_empty(), "game table should have FK candidate columns");
+    // Should detect team_id → team relationship
+    let team_fk = fk_cols.iter().find(|c| c.name.contains("team_id"));
+    assert!(team_fk.is_some(), "game table should have team_id FK column");
+}
+
+#[tokio::test]
+async fn test_enriched_schema_fk_relationships() {
+    let db = match get_test_db() {
+        Some(d) => d,
+        None => return,
+    };
+    let key_tables: &[&str] = &["game", "player", "team"];
+    let schema = db.build_enriched_schema(Some(key_tables)).await.unwrap();
+    // Should detect game.team_id_home → team (or similar)
+    assert!(!schema.fk_relationships.is_empty(), "Should detect some FK relationships");
+}
+
+#[tokio::test]
+async fn test_format_enriched_schema_output() {
+    let db = match get_test_db() {
+        Some(d) => d,
+        None => return,
+    };
+    let key_tables: &[&str] = &["game", "player"];
+    let schema = db.build_enriched_schema(Some(key_tables)).await.unwrap();
+    let formatted = nba_agent::db::DbContext::format_enriched_schema(&schema);
+    assert!(formatted.contains("Database Overview"), "Should have header");
+    assert!(formatted.contains("game"), "Should mention game table");
+    assert!(formatted.contains("player"), "Should mention player table");
+    assert!(formatted.contains("Key Table Schemas"), "Should have schemas section");
+}
+
+#[tokio::test]
+async fn test_enriched_schema_date_range() {
+    let db = match get_test_db() {
+        Some(d) => d,
+        None => return,
+    };
+    let key_tables: &[&str] = &["game"];
+    let schema = db.build_enriched_schema(Some(key_tables)).await.unwrap();
+    let game = schema.tables.iter().find(|t| t.table_name == "game").unwrap();
+    // game table should have a date range (game_date column exists)
+    assert!(game.date_range.is_some(), "game table should have date range");
+}
+
+#[tokio::test]
+async fn test_enriched_schema_sample_values() {
+    let db = match get_test_db() {
+        Some(d) => d,
+        None => return,
+    };
+    let key_tables: &[&str] = &["player", "team"];
+    let schema = db.build_enriched_schema(Some(key_tables)).await.unwrap();
+    // Find a column with sample values (name-like columns should have samples)
+    let has_samples = schema.tables.iter().any(|t| {
+        t.columns.iter().any(|c| !c.sample_values.is_empty())
+    });
+    assert!(has_samples, "Should have columns with sample values");
+}
