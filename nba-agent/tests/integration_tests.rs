@@ -355,3 +355,105 @@ async fn test_enriched_schema_sample_values() {
     });
     assert!(has_samples, "Should have columns with sample values");
 }
+
+// ---------------------------------------------------------------------------
+// Auto SQL error recovery tests
+// ---------------------------------------------------------------------------
+
+#[test]
+fn test_auto_fix_sql_season_to_season_id() {
+    let query = "SELECT game_id, game_date, season, home_team_id FROM game LIMIT 5;";
+    let error = "Binder Error: Referenced column \"season\" not found in FROM clause!\n\
+                 Candidate bindings: \"season_id\", \"season_type\"\n\
+                 LINE 1: SELECT game_id, game_date, season, home_team_id FROM game LIMIT 5;";
+    let fixed = nba_agent::db::DbContext::auto_fix_sql(query, error).unwrap();
+    assert!(fixed.contains("season_id"), "Should replace season with season_id");
+    assert!(!fixed.contains("\"season\""), "Should not have bare season");
+}
+
+#[test]
+fn test_auto_fix_sql_player_name_to_first_name() {
+    let query = "SELECT player_name, roster_status FROM common_player_info LIMIT 5;";
+    let error = "Binder Error: Referenced column \"player_name\" not found in FROM clause!\n\
+                 Candidate bindings: \"playercode\", \"player_slug\", \"first_name\"\n\
+                 LINE 1: SELECT player_name, roster_status FROM common_player_info LIMIT 5;";
+    let fixed = nba_agent::db::DbContext::auto_fix_sql(query, error).unwrap();
+    assert!(fixed.contains("playercode"), "Should replace player_name with playercode (first candidate)");
+    assert!(!fixed.contains("player_name"), "Should remove player_name");
+}
+
+#[test]
+fn test_auto_fix_sql_roster_status() {
+    let query = "SELECT first_name, last_name, roster_status FROM common_player_info LIMIT 5;";
+    let error = "Binder Error: Referenced column \"roster_status\" not found in FROM clause!\n\
+                 Candidate bindings: \"rosterstatus\", \"first_name\", \"to_year\"\n\
+                 LINE 1: SELECT first_name, last_name, roster_status FROM common_player_info LIMIT 5;";
+    let fixed = nba_agent::db::DbContext::auto_fix_sql(query, error).unwrap();
+    assert!(fixed.contains("rosterstatus"), "Should replace roster_status with rosterstatus");
+    assert!(!fixed.contains("roster_status"), "Should remove roster_status");
+}
+
+#[test]
+fn test_auto_fix_sql_home_team_id() {
+    let query = "SELECT game_id, home_team_id, away_team_id FROM game LIMIT 5;";
+    let error = "Binder Error: Referenced column \"home_team_id\" not found in FROM clause!\n\
+                 Candidate bindings: \"team_id_home\", \"team_name_home\"\n\
+                 LINE 1: SELECT game_id, home_team_id, away_team_id FROM game LIMIT 5;";
+    let fixed = nba_agent::db::DbContext::auto_fix_sql(query, error).unwrap();
+    assert!(fixed.contains("team_id_home"), "Should replace home_team_id with team_id_home");
+}
+
+#[test]
+fn test_auto_fix_sql_no_candidates_returns_none() {
+    let query = "SELECT * FROM nonexistent_table;";
+    let error = "Binder Error: Table \"nonexistent_table\" does not exist";
+    let fixed = nba_agent::db::DbContext::auto_fix_sql(query, error);
+    assert!(fixed.is_none(), "Should return None when no candidate bindings");
+}
+
+#[test]
+fn test_auto_fix_sql_preserves_string_literals() {
+    // If a column name appears in a string literal, it should NOT be replaced
+    let query = "SELECT 'season' as label, season FROM game LIMIT 1;";
+    let error = "Binder Error: Referenced column \"season\" not found in FROM clause!\n\
+                 Candidate bindings: \"season_id\", \"season_type\"\n\
+                 LINE 1: SELECT 'season' as label, season FROM game LIMIT 1;";
+    let fixed = nba_agent::db::DbContext::auto_fix_sql(query, error).unwrap();
+    // The string literal 'season' should stay, the bare identifier season should become season_id
+    assert!(fixed.contains("'season'"), "String literal should be preserved");
+    assert!(fixed.contains("season_id"), "Column reference should be fixed");
+}
+
+#[tokio::test]
+async fn test_auto_fix_integration_with_real_db() {
+    let db = match get_test_db() {
+        Some(d) => d,
+        None => return,
+    };
+
+    // Query with a wrong column name that has known candidates
+    let bad_query = "SELECT player_name FROM common_player_info LIMIT 1;";
+    let result = db.run_sql(bad_query.to_string(), Some(1)).await;
+    assert!(result.is_err(), "Bad query should fail initially");
+
+    // Auto-fix should work
+    let err_msg = result.unwrap_err().to_string();
+    let fixed = nba_agent::db::DbContext::auto_fix_sql(bad_query, &err_msg);
+    assert!(fixed.is_some(), "Should auto-fix player_name → first_name or similar");
+
+    // Fixed query should succeed
+    let fixed_query = fixed.unwrap();
+    let rows = db.run_sql(fixed_query, Some(1)).await.unwrap();
+    assert!(!rows.is_empty(), "Fixed query should return results");
+}
+
+#[test]
+fn test_auto_fix_sql_multiple_candidates() {
+    let query = "SELECT pts FROM player_game_stats LIMIT 5;";
+    let error = "Binder Error: Referenced column \"pts\" not found in FROM clause!\n\
+                 Candidate bindings: \"pts_home\", \"pts_away\", \"pts_total\"\n\
+                 LINE 1: SELECT pts FROM player_game_stats LIMIT 5;";
+    let fixed = nba_agent::db::DbContext::auto_fix_sql(query, error).unwrap();
+    assert!(fixed.contains("pts_home"), "Should pick first candidate: pts_home");
+    assert!(!fixed.contains("pts_away"), "Should not pick second candidate");
+}

@@ -145,6 +145,36 @@ impl DbContext {
         Ok(results)
     }
 
+    /// Parse DuckDB error messages for "candidate bindings" and auto-correct
+    /// column name typos. Returns the fixed SQL query if a correction was made.
+    pub fn auto_fix_sql(original_query: &str, error_msg: &str) -> Option<String> {
+        // Extract the bad column name: "Referenced column \"COL\" not found"
+        let bad_col = extract_between(error_msg, "Referenced column \"", "\" not found")?;
+
+        // Extract candidates: "Candidate bindings: \"A\", \"B\", ..."
+        let candidates_str = error_msg
+            .find("Candidate bindings:")
+            .and_then(|pos| {
+                let after = &error_msg[pos + "Candidate bindings:".len()..];
+                // Take everything until the next line or end
+                after.split('\n').next()
+            })?;
+
+        let candidates: Vec<&str> = candidates_str
+            .split(',')
+            .map(|s| s.trim().trim_matches('"'))
+            .filter(|s| !s.is_empty())
+            .collect();
+
+        if candidates.is_empty() {
+            return None;
+        }
+
+        // Replace the bad column name with the first candidate
+        let fixed = replace_sql_ident(original_query, bad_col, candidates[0]);
+        Some(fixed)
+    }
+
     /// List tables matching optional prefix or pattern
     pub async fn list_tables(&self, pattern_opt: Option<String>) -> anyhow::Result<Vec<String>> {
         let conn_arc = self.conn.clone();
@@ -562,4 +592,61 @@ impl DbContext {
         );
         Ok(summary)
     }
+}
+
+// -- Helper functions for auto_fix_sql --
+
+fn extract_between<'a>(haystack: &'a str, prefix: &str, suffix: &str) -> Option<&'a str> {
+    let start = haystack.find(prefix)? + prefix.len();
+    let remaining = &haystack[start..];
+    let end = remaining.find(suffix)?;
+    Some(&remaining[..end])
+}
+
+/// Replace an SQL identifier (column name) in the query, handling quoting.
+/// Skips replacements inside single-quoted string literals.
+fn replace_sql_ident(sql: &str, old_name: &str, new_name: &str) -> String {
+    let mut result = String::with_capacity(sql.len() + new_name.len());
+    let bytes = sql.as_bytes();
+    let old_bytes = old_name.as_bytes();
+    let mut i = 0;
+    let mut in_single_quote = false;
+
+    while i < bytes.len() {
+        if bytes[i] == b'\'' {
+            if in_single_quote && i + 1 < bytes.len() && bytes[i + 1] == b'\'' {
+                result.push('\'');
+                result.push('\'');
+                i += 2;
+                continue;
+            }
+            in_single_quote = !in_single_quote;
+            result.push('\'');
+            i += 1;
+            continue;
+        }
+
+        if in_single_quote {
+            result.push(bytes[i] as char);
+            i += 1;
+            continue;
+        }
+
+        if i + old_bytes.len() <= bytes.len() && &bytes[i..i + old_bytes.len()] == old_bytes {
+            let before_ok = i == 0 || !bytes[i - 1].is_ascii_alphanumeric() && bytes[i - 1] != b'_';
+            let after_ok = i + old_bytes.len() >= bytes.len()
+                || !bytes[i + old_bytes.len()].is_ascii_alphanumeric()
+                    && bytes[i + old_bytes.len()] != b'_';
+
+            if before_ok && after_ok {
+                result.push_str(new_name);
+                i += old_bytes.len();
+                continue;
+            }
+        }
+        result.push(bytes[i] as char);
+        i += 1;
+    }
+
+    result
 }

@@ -513,7 +513,29 @@ impl Agent {
                 let query = args["query"].as_str().unwrap_or("").to_string();
                 let result_str = match self.db.run_sql(query.clone(), None).await {
                     Ok(rows) => serde_json::to_string_pretty(&rows).unwrap_or_default(),
-                    Err(e) => format!("SQL Error: {}", e),
+                    Err(e) => {
+                        let err_msg = e.to_string();
+                        // Try auto-fix using DuckDB's candidate bindings
+                        if let Some(fixed_query) = DbContext::auto_fix_sql(&query, &err_msg) {
+                            tracing::info!("Auto-fixed SQL column name, retrying: {}", fixed_query);
+                            match self.db.run_sql(fixed_query.clone(), None).await {
+                                Ok(rows) => {
+                                    format!(
+                                        "[Auto-corrected column name and retried successfully]\n{}",
+                                        serde_json::to_string_pretty(&rows).unwrap_or_default()
+                                    )
+                                }
+                                Err(e2) => {
+                                    format!(
+                                        "SQL Error (original): {}\nAuto-fix attempt ({}): {}",
+                                        err_msg, fixed_query, e2
+                                    )
+                                }
+                            }
+                        } else {
+                            format!("SQL Error: {}", err_msg)
+                        }
+                    }
                 };
                 (reasoning, query, result_str)
             }
