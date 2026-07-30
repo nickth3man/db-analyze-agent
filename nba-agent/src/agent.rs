@@ -16,6 +16,8 @@ pub struct ToolCallStep {
     pub reasoning: String,
     pub query_or_params: String,
     pub result: String,
+    pub elapsed_ms: u64,
+    pub row_count: usize,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -38,7 +40,7 @@ pub enum AgentStreamEvent {
     StepStarted { step: usize },
     Reasoning { text: String },
     ToolCallStarted { tool_name: String, reasoning: String, query_or_params: String },
-    ToolCallResult { tool_name: String, result: String },
+    ToolCallResult { tool_name: String, result: String, elapsed_ms: u64, row_count: usize },
     FinalAnswerChunk { text: String },
     Completed { trace: ConversationTrace },
     Error { message: String },
@@ -55,6 +57,14 @@ pub struct ChatMessage {
     pub tool_call_id: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub name: Option<String>,
+}
+
+struct ToolResult {
+    reasoning: String,
+    param_str: String,
+    result_str: String,
+    elapsed_ms: u64,
+    row_count: usize,
 }
 
 #[derive(Clone)]
@@ -304,18 +314,20 @@ impl Agent {
                     let fn_args_str = fn_val["arguments"].as_str().unwrap_or("{}");
                     let parsed_args: Value = serde_json::from_str(fn_args_str).unwrap_or_default();
 
-                    let (reasoning, param_str, result_str) = self.execute_tool(fn_name, &parsed_args).await;
 
+                    let tr = self.execute_tool(fn_name, &parsed_args).await;
                     step.tool_calls.push(ToolCallStep {
                         tool_name: fn_name.to_string(),
-                        reasoning,
-                        query_or_params: param_str,
-                        result: result_str.clone(),
+                        reasoning: tr.reasoning,
+                        query_or_params: tr.param_str,
+                        result: tr.result_str.clone(),
+                        elapsed_ms: tr.elapsed_ms,
+                        row_count: tr.row_count,
                     });
 
                     messages.push(ChatMessage {
                         role: "tool".to_string(),
-                        content: Some(json!(result_str)),
+                        content: Some(json!(tr.result_str)),
                         tool_calls: None,
                         tool_call_id: Some(call_id),
                         name: Some(fn_name.to_string()),
@@ -461,29 +473,32 @@ impl Agent {
                         let fn_args_str = fn_val["arguments"].as_str().unwrap_or("{}");
                         let parsed_args: Value = serde_json::from_str(fn_args_str).unwrap_or_default();
 
-                        let (reasoning, param_str, result_str) = this.execute_tool(fn_name, &parsed_args).await;
+                        let tr = this.execute_tool(fn_name, &parsed_args).await;
 
                         yield Ok(AgentStreamEvent::ToolCallStarted {
                             tool_name: fn_name.to_string(),
-                            reasoning: reasoning.clone(),
-                            query_or_params: param_str.clone(),
+                            reasoning: tr.reasoning.clone(),
+                            query_or_params: tr.param_str.clone(),
                         });
 
                         yield Ok(AgentStreamEvent::ToolCallResult {
                             tool_name: fn_name.to_string(),
-                            result: result_str.clone(),
+                            result: tr.result_str.clone(),
+                            elapsed_ms: tr.elapsed_ms,
+                            row_count: tr.row_count,
                         });
 
                         step.tool_calls.push(ToolCallStep {
                             tool_name: fn_name.to_string(),
-                            reasoning,
-                            query_or_params: param_str,
-                            result: result_str.clone(),
+                            reasoning: tr.reasoning.clone(),
+                            query_or_params: tr.param_str.clone(),
+                            result: tr.result_str.clone(),
+                            elapsed_ms: tr.elapsed_ms,
+                            row_count: tr.row_count,
                         });
-
                         messages.push(ChatMessage {
                             role: "tool".to_string(),
-                            content: Some(json!(result_str)),
+                            content: Some(json!(tr.result_str)),
                             tool_calls: None,
                             tool_call_id: Some(call_id),
                             name: Some(fn_name.to_string()),
@@ -504,9 +519,10 @@ impl Agent {
         })
     }
 
-    /// Dispatch tool calls to DbContext
-    async fn execute_tool(&self, name: &str, args: &Value) -> (String, String, String) {
-        match name {
+    /// Dispatch tool calls to DbContext. Returns timing metadata alongside results.
+    async fn execute_tool(&self, name: &str, args: &Value) -> ToolResult {
+        let start = std::time::Instant::now();
+        let (reasoning, param_str, result_str) = match name {
             "run_sql" => {
                 let reasoning = args["reasoning"].as_str().unwrap_or("Executing query").to_string();
                 let query = args["query"].as_str().unwrap_or("").to_string();
@@ -514,7 +530,6 @@ impl Agent {
                     Ok(rows) => serde_json::to_string_pretty(&rows).unwrap_or_default(),
                     Err(e) => {
                         let err_msg = e.to_string();
-                        // Try auto-fix using DuckDB's candidate bindings
                         if let Some(fixed_query) = DbContext::auto_fix_sql(&query, &err_msg) {
                             tracing::info!("Auto-fixed SQL column name, retrying: {}", fixed_query);
                             match self.db.run_sql(fixed_query.clone(), None).await {
@@ -580,7 +595,6 @@ impl Agent {
                 let title = args["title"].as_str().unwrap_or("NBA Stat Chart").to_string();
                 let sql_query = args["sql_query"].as_str().unwrap_or("").to_string();
                 let reasoning = format!("Generating {} chart: '{}'", chart_type, title);
-
                 let result_str = match self.db.run_sql(sql_query.clone(), Some(30)).await {
                     Ok(rows) => {
                         let chart_json = json!({
@@ -595,7 +609,13 @@ impl Agent {
                 (reasoning, sql_query, result_str)
             }
             _ => ("Unknown tool".to_string(), name.to_string(), format!("Tool `{}` not supported.", name)),
-        }
+        };
+        let elapsed_ms = start.elapsed().as_millis() as u64;
+        // Count rows in the result (parse JSON array if possible)
+        let row_count = serde_json::from_str::<Vec<Value>>(&result_str)
+            .map(|v| v.len())
+            .unwrap_or(0);
+        ToolResult { reasoning, param_str, result_str, elapsed_ms, row_count }
     }
 
     /// List active session IDs and their message counts.
