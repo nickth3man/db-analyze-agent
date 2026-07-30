@@ -506,3 +506,29 @@ async fn test_game_count_insight_accurate() {
         assert_eq!(card_val, actual, "Game count should match actual DB count");
     }
 }
+
+// ---------------------------------------------------------------------------
+// Session export tests
+// ---------------------------------------------------------------------------
+
+#[test]
+fn test_append_markdown_table_formats_correctly() {
+    let rows: Vec<serde_json::Value> = vec![
+        serde_json::json!({"name": "Alice", "score": 42}),
+        serde_json::json!({"name": "Bob", "score": 17}),
+    ];
+    let mut md = String::new();
+    nba_agent::agent::Agent::append_markdown_table(&mut md, &rows);
+    assert!(md.contains("| name | score |"), "Should have header row");
+    assert!(md.contains("| --- | --- |"), "Should have separator");
+    assert!(md.contains("| Alice | 42 |"), "Should have data row");
+    assert!(md.contains("| Bob | 17 |"), "Should have second data row");
+}
+
+#[test]
+fn test_append_markdown_table_empty() {
+    let rows: Vec<serde_json::Value> = vec![];
+    let mut md = String::new();
+    nba_agent::agent::Agent::append_markdown_table(&mut md, &rows);
+    assert!(md.is_empty(), "Empty rows should produce no output");
+}

@@ -90,6 +90,14 @@
                 </svg>
                 New Chat
             </button>
+            <button id="btn-export" title="Export session as Markdown"
+                class="bg-[#21262d] hover:bg-[#30363d] text-gray-300 text-xs px-3 py-1.5 rounded-md border border-[#30363d] transition-colors flex items-center gap-1.5">
+                <svg class="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                    <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2"
+                        d="M4 16v1a3 3 0 003 3h10a3 3 0 003-3v-1m-4-4l-4 4m0 0l-4-4m4 4V4"></path>
+                </svg>
+                Export
+            </button>
         </div>
     </header>
 
@@ -196,6 +204,11 @@
             }
         });
 
+
+        // Export session as Markdown
+        document.getElementById('btn-export').addEventListener('click', () => {
+            window.open('/api/export?session=' + encodeURIComponent(currentSessionId), '_blank');
+        });
         function addUserMessage(text) {
             const wrapper = document.createElement('div');
             wrapper.className = 'flex justify-end w-full';

@@ -57,6 +57,7 @@ pub fn build_router(state: AppState) -> Router {
         .route("/api/health", get(health_handler))
         .route("/api/test-query", get(test_query_handler))
         .route("/api/insights", get(insights_handler))
+        .route("/api/export", get(export_handler))
         .fallback_service(ServeDir::new("static"))
         .with_state(state)
 }
@@ -137,4 +138,23 @@ async fn test_query_handler(State(state): State<AppState>) -> Json<TestQueryResp
 }
 async fn insights_handler(State(state): State<AppState>) -> Json<db::InsightsResponse> {
     Json((*state.insights).clone())
+}
+
+#[derive(Deserialize)]
+struct ExportQuery {
+    session: String,
+}
+
+async fn export_handler(
+    State(state): State<AppState>,
+    Query(query): Query<ExportQuery>,
+) -> Result<axum::response::Response, axum::http::StatusCode> {
+    match state.agent.export_session_markdown(&query.session) {
+        Some(md) => Ok(axum::response::Response::builder()
+            .header("Content-Type", "text/markdown; charset=utf-8")
+            .header("Content-Disposition", format!("attachment; filename=\"nba-report-{}.md\"", &query.session[..8.min(query.session.len())]))
+            .body(axum::body::Body::from(md))
+            .unwrap()),
+        None => Err(axum::http::StatusCode::NOT_FOUND),
+    }
 }
