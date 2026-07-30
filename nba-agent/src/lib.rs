@@ -16,6 +16,7 @@ use tower_http::services::ServeDir;
 pub struct AppState {
     pub agent: Arc<agent::Agent>,
     pub db: db::DbContext,
+    pub insights: Arc<db::InsightsResponse>,
 }
 
 #[derive(Deserialize)]
@@ -42,8 +43,10 @@ struct HealthResponse {
 }
 
 pub async fn build_state(db: db::DbContext) -> anyhow::Result<AppState> {
-    let agent = Arc::new(agent::Agent::new(db.clone()).await?);
-    Ok(AppState { agent, db })
+    let insights = Arc::new(db.generate_insights().await);
+    let insights_brief = db::DbContext::format_insights_for_prompt(&insights);
+    let agent = Arc::new(agent::Agent::new(db.clone(), insights_brief).await?);
+    Ok(AppState { agent, db, insights })
 }
 
 pub fn build_router(state: AppState) -> Router {
@@ -53,6 +56,7 @@ pub fn build_router(state: AppState) -> Router {
         .route("/api/reset", post(reset_handler))
         .route("/api/health", get(health_handler))
         .route("/api/test-query", get(test_query_handler))
+        .route("/api/insights", get(insights_handler))
         .fallback_service(ServeDir::new("static"))
         .with_state(state)
 }
@@ -130,4 +134,7 @@ async fn test_query_handler(State(state): State<AppState>) -> Json<TestQueryResp
             })
         }
     }
+}
+async fn insights_handler(State(state): State<AppState>) -> Json<db::InsightsResponse> {
+    Json((*state.insights).clone())
 }

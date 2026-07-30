@@ -457,3 +457,52 @@ fn test_auto_fix_sql_multiple_candidates() {
     assert!(fixed.contains("pts_home"), "Should pick first candidate: pts_home");
     assert!(!fixed.contains("pts_away"), "Should not pick second candidate");
 }
+
+// ---------------------------------------------------------------------------
+// Insight cards tests
+// ---------------------------------------------------------------------------
+
+#[tokio::test]
+async fn test_generate_insights_returns_cards() {
+    let db = match get_test_db() {
+        Some(d) => d,
+        None => return,
+    };
+    let insights = db.generate_insights().await;
+    assert!(insights.total_queries > 0, "Should have at least one card");
+    assert_eq!(insights.cards.len(), insights.total_queries);
+    // At least the simple count queries should succeed
+    let successful = insights.cards.iter().filter(|c| c.error.is_none()).count();
+    assert!(successful > 0, "At least some insight cards should succeed");
+}
+
+#[tokio::test]
+async fn test_insight_cards_have_required_fields() {
+    let db = match get_test_db() {
+        Some(d) => d,
+        None => return,
+    };
+    let insights = db.generate_insights().await;
+    for card in &insights.cards {
+        assert!(!card.id.is_empty(), "Card should have id");
+        assert!(!card.title.is_empty(), "Card should have title");
+        assert!(!card.category.is_empty(), "Card should have category");
+    }
+}
+
+#[tokio::test]
+async fn test_game_count_insight_accurate() {
+    let db = match get_test_db() {
+        Some(d) => d,
+        None => return,
+    };
+    let insights = db.generate_insights().await;
+    let game_card = insights.cards.iter().find(|c| c.id == "total_games");
+    assert!(game_card.is_some(), "Should have total_games card");
+    let card = game_card.unwrap();
+    if card.error.is_none() {
+        let actual: i64 = db.run_sql("SELECT COUNT(*) as val FROM game;".to_string(), Some(1)).await.unwrap()[0]["val"].as_i64().unwrap();
+        let card_val: i64 = card.value.replace(',', "").parse().unwrap_or(0);
+        assert_eq!(card_val, actual, "Game count should match actual DB count");
+    }
+}

@@ -63,11 +63,12 @@ pub struct Agent {
     api_key: String,
     db: DbContext,
     schema_summary: String,
+    insights_brief: String,
     sessions: Arc<RwLock<HashMap<String, Vec<ChatMessage>>>>,
 }
 
 impl Agent {
-    pub async fn new(db: DbContext) -> Result<Self> {
+    pub async fn new(db: DbContext, insights_brief: String) -> Result<Self> {
         let api_key = std::env::var("OPENROUTER_API_KEY")
             .or_else(|_| std::env::var("OPENAI_API_KEY"))
             .map_err(|_| anyhow!("Neither OPENROUTER_API_KEY nor OPENAI_API_KEY set"))?;
@@ -83,7 +84,7 @@ impl Agent {
         let enriched = db.build_enriched_schema(Some(&key_tables)).await?;
         let schema_summary = DbContext::format_enriched_schema(&enriched);
 
-        Ok(Self { http_client, api_key, db, schema_summary, sessions: Arc::new(RwLock::new(HashMap::new())) })
+        Ok(Self { http_client, api_key, db, schema_summary, insights_brief, sessions: Arc::new(RwLock::new(HashMap::new())) })
     }
 
     /// Reset session history
@@ -98,19 +99,17 @@ impl Agent {
             Your task is to answer natural language questions about NBA stats, games, teams, and players with exact, verified data.\n\n\
             AVAILABLE TOOLS:\n\
             1. `run_sql(reasoning, query)` - Execute DuckDB SQL and get JSON output (capped to 50 rows).\n\
-            2. `list_tables(pattern)` - List table names matching a pattern (e.g. 'agg_%', 'player%').\n\
-            3. `search_tables(keyword)` - Search table & column names across all 588 tables for keywords.\n\
-            4. `describe_table(table_name)` - Inspect column names, data types, and sample rows of a specific table.\n\
-            5. `explain_query(query)` - Check SQL syntax and get execution plan using EXPLAIN.\n\
-            6. `generate_chart(chart_type, title, sql_query)` - Format query results into a chart visualization specification.\n\n\
+            2. `list_tables(pattern)` - List table names matching a pattern.\n\
+            3. `search_tables(keyword)` - Search table & column names for keywords.\n\
+            4. `describe_table(table_name)` - Inspect column names, types, and sample rows.\n\
+            5. `explain_query(query)` - Check SQL syntax via EXPLAIN.\n\
+            6. `generate_chart(chart_type, title, sql_query)` - Create chart visualization.\n\n\
             BEST PRACTICES:\n\
-            • Use the schema context below — it includes row counts, FK relationships (→ arrows), and sample values (e.g.).\n\
-            • FK columns (ending in _id) reference the table of the same name (e.g. team_id → team). Use JOINs on these.\n\
-            • If a query fails, read the error message's 'Candidate bindings' to find the correct column names.\n\
-            • For complex questions, use search_tables first to discover relevant tables beyond those listed below.\n\
-            • Synthesize numerical data into concise analytical narrative insights.\n\n\
+            • Use schema context (row counts, FK→arrows, sample values) for accurate JOINs.\n\
+            • FK columns (ending in _id) reference the same-named table.\n\
+            • If a query fails, read 'Candidate bindings' for correct column names.\n\n\
             {}",
-            self.schema_summary
+            format!("{}\n\n{}", self.insights_brief, self.schema_summary)
         )
     }
 

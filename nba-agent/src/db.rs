@@ -56,6 +56,24 @@ pub struct EnrichedSchema {
     pub fk_relationships: Vec<(String, String, String)>, // (from_table, from_col, to_table)
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct InsightCard {
+    pub id: String,
+    pub title: String,
+    pub value: String,
+    pub subtitle: String,
+    pub category: String,
+    pub error: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct InsightsResponse {
+    pub cards: Vec<InsightCard>,
+    pub generated_at: String,
+    pub total_queries: usize,
+    pub successful: usize,
+}
+
 impl DbContext {
     pub fn new(path: &str) -> DuckResult<Self> {
         let config = Config::default().access_mode(AccessMode::ReadOnly)?;
@@ -563,6 +581,130 @@ impl DbContext {
 
         out
     }
+
+    /// Generate automated insight cards about the database.
+    /// Each card runs a specific SQL query; failures are isolated per-card.
+    pub async fn generate_insights(&self) -> InsightsResponse {
+        let cards = vec![
+            self.insight_card("total_games", "Total Games", "stats",
+                "SELECT COUNT(*) as val FROM game;",
+                "All-time NBA games in database").await,
+            self.insight_card("total_players", "Total Players", "stats",
+                "SELECT COUNT(*) as val FROM player;",
+                "Unique players tracked").await,
+            self.insight_card("total_teams", "Total Teams", "stats",
+                "SELECT COUNT(*) as val FROM team;",
+                "Franchises and teams").await,
+            self.insight_card("season_range", "Season Coverage", "range",
+                "SELECT MIN(season_id) as min_s, MAX(season_id) as max_s FROM game;",
+                "NBA seasons in database").await,
+            self.insight_card("recent_season", "Most Recent Season", "range",
+                "SELECT MAX(season_id) as val FROM game;",
+                "Latest NBA season").await,
+            self.insight_card("largest_table", "Largest Table", "meta",
+                "SELECT table_name, estimated_size FROM duckdb_tables() \
+                 WHERE schema_name='main' AND estimated_size >= 0 \
+                 ORDER BY estimated_size DESC LIMIT 1;",
+                "Table with most rows").await,
+            self.insight_card("total_tables", "Database Tables", "meta",
+                "SELECT COUNT(*) as val FROM information_schema.tables WHERE table_schema='main';",
+                "Total analytical tables").await,
+        ];
+
+        let total = cards.len();
+        let successful = cards.iter().filter(|c| c.error.is_none()).count();
+        InsightsResponse {
+            cards,
+            generated_at: format!("{}", std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_secs()).unwrap_or(0)),
+            total_queries: total,
+            successful,
+        }
+    }
+
+    async fn insight_card(
+        &self,
+        id: &str,
+        title: &str,
+        category: &str,
+        query: &str,
+        subtitle: &str,
+    ) -> InsightCard {
+        match self.run_sql(query.to_string(), Some(1)).await {
+            Ok(rows) if !rows.is_empty() => {
+                let first = &rows[0];
+                let value = if let Some(v) = first.get("val") {
+                    if let Some(n) = v.as_i64() {
+                        Self::format_num_comma(n)
+                    } else {
+                        v.to_string().trim_matches('"').to_string()
+                    }
+                } else if let Some(v) = first.get("name") {
+                    v.to_string().trim_matches('"').to_string()
+                } else if let Some(v) = first.get("total_pts").or_else(|| first.get("total_threes")).or_else(|| first.get("games")) {
+                    if let Some(n) = v.as_i64() {
+                        Self::format_num_comma(n)
+                    } else {
+                        v.to_string().trim_matches('"').to_string()
+                    }
+                } else if let Some(v) = first.get("table_name") {
+                    format!("{} ({} rows)", v.to_string().trim_matches('"'), first.get("estimated_size").map(|e| Self::format_num_comma(e.as_i64().unwrap_or(0))).unwrap_or_default())
+                } else if let Some(v) = first.get("min_s") {
+                    format!("{} – {}", v.to_string().trim_matches('"'), first.get("max_s").map(|m| m.to_string().trim_matches('"').to_string()).unwrap_or_default())
+                } else {
+                    serde_json::to_string(&first).unwrap_or_else(|_| "—".to_string())
+                };
+
+                InsightCard {
+                    id: id.to_string(),
+                    title: title.to_string(),
+                    value,
+                    subtitle: subtitle.to_string(),
+                    category: category.to_string(),
+                    error: None,
+                }
+            }
+            Ok(_) => InsightCard {
+                id: id.to_string(),
+                title: title.to_string(),
+                value: "—".to_string(),
+                subtitle: subtitle.to_string(),
+                category: category.to_string(),
+                error: Some("No rows returned".to_string()),
+            },
+            Err(e) => InsightCard {
+                id: id.to_string(),
+                title: title.to_string(),
+                value: "—".to_string(),
+                subtitle: subtitle.to_string(),
+                category: category.to_string(),
+                error: Some(format!("Query failed: {}", e)),
+            },
+        }
+    }
+
+    /// Format successful insight cards as a brief system prompt snippet.
+    pub fn format_insights_for_prompt(insights: &InsightsResponse) -> String {
+        let mut out = String::from("Database Insights (pre-computed):\n");
+        for card in &insights.cards {
+            if card.error.is_none() && card.value != "—" {
+                out.push_str(&format!("  • {}: {} ({})\n", card.title, card.value, card.subtitle));
+            }
+        }
+        out
+    }
+
+fn format_num_comma(n: i64) -> String {
+    if n < 0 { return "?".to_string(); }
+    if n < 1000 { return n.to_string(); }
+    let s = n.to_string();
+    let len = s.len();
+    let mut out = String::with_capacity(len + len / 3);
+    for (i, c) in s.chars().enumerate() {
+        if i > 0 && (len - i) % 3 == 0 { out.push(','); }
+        out.push(c);
+    }
+    out
+}
 
     /// Get curated schema context overview for key entities
     pub async fn get_schema_summary(&self) -> anyhow::Result<String> {
