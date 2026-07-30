@@ -171,6 +171,55 @@
             scrollToBottom();
         }
 
+        function escapeHtml(str) {
+            const d = document.createElement('div');
+            d.textContent = str;
+            return d.innerHTML;
+        }
+
+        function renderResultAsTable(rows) {
+            if (rows.length === 0) return '<div class="text-gray-500 italic p-2">No rows returned.</div>';
+            if (typeof rows[0] !== 'object' || rows[0] === null) {
+                return '<pre class="text-gray-400 max-h-60 overflow-y-auto p-2 bg-[#161b22] rounded border border-[#30363d]">' + escapeHtml(JSON.stringify(rows, null, 2)) + '</pre>';
+            }
+            const keys = Object.keys(rows[0]);
+            if (keys.length === 0) return '<div class="text-gray-500 italic p-2">Empty objects returned.</div>';
+
+            let html = '<div class="overflow-auto max-h-96 border border-[#30363d] rounded"><table class="w-full text-left text-xs border-collapse">';
+            html += '<thead><tr class="bg-[#21262d] sticky top-0">';
+            for (const k of keys) {
+                html += '<th class="px-3 py-2 font-mono text-[#58a6ff] border-b border-[#30363d] whitespace-nowrap">' + escapeHtml(k) + '</th>';
+            }
+            html += '</tr></thead><tbody>';
+            for (const row of rows) {
+                html += '<tr class="hover:bg-[#1a1f2b] border-b border-[#21262d]">';
+                for (const k of keys) {
+                    const val = row[k];
+                    const display = val === null
+                        ? '<span class="text-gray-600 italic">NULL</span>'
+                        : typeof val === 'object'
+                            ? '<span class="text-gray-400">' + escapeHtml(JSON.stringify(val)) + '</span>'
+                            : typeof val === 'number'
+                                ? '<span class="text-[#79c0ff] font-mono text-right block">' + val + '</span>'
+                                : escapeHtml(String(val));
+                    html += '<td class="px-3 py-1.5 whitespace-nowrap max-w-xs truncate">' + display + '</td>';
+                }
+                html += '</tr>';
+            }
+            html += '</tbody></table></div>';
+            return html;
+        }
+
+        function tryRenderResult(resultStr) {
+            try {
+                const parsed = JSON.parse(resultStr);
+                if (Array.isArray(parsed) && parsed.length > 0 && typeof parsed[0] === 'object' && parsed[0] !== null) {
+                    return renderResultAsTable(parsed);
+                }
+            } catch (_) { }
+            return '<pre class="text-gray-400 max-h-60 overflow-y-auto p-2 bg-[#161b22] rounded border border-[#30363d]">' + escapeHtml(resultStr) + '</pre>';
+        }
+
         function createToolCallBlock(tool) {
             const block = document.createElement('div');
             block.className = 'tool-block my-3 overflow-hidden text-sm border border-[#30363d]';
@@ -198,7 +247,7 @@
                     <svg class="w-4 h-4 text-gray-400 transform transition-transform" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 5l7 7-7 7"></path></svg>
                 </summary>
                 <div class="p-4 text-gray-300 bg-[#0d1117] leading-relaxed border-t border-[#30363d] text-xs md:text-sm">
-                    ${tool.reasoning}
+                    ${escapeHtml(tool.reasoning)}
                 </div>
             `;
 
@@ -209,9 +258,9 @@
                     <svg class="w-4 h-4 text-gray-400 transform transition-transform" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M10 20l4-16m4 4l4 4-4 4M6 16l-4-4 4-4"></path></svg>
                     Parameters & Result
                 </summary>
-                <div class="p-4 bg-[#0d1117] font-mono text-xs overflow-x-auto border-t border-[#30363d] space-y-3">
-                    <div class="text-[#79c0ff]">${tool.query_or_params}</div>
-                    <pre class="text-gray-400 max-h-60 overflow-y-auto p-2 bg-[#161b22] rounded border border-[#30363d]">${tool.result}</pre>
+                <div class="p-4 bg-[#0d1117] text-xs overflow-x-auto border-t border-[#30363d] space-y-3">
+                    <div class="text-[#79c0ff] font-mono">${escapeHtml(tool.query_or_params)}</div>
+                    ${tryRenderResult(tool.result)}
                 </div>
             `;
 

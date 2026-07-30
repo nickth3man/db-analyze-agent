@@ -4,3 +4,4 @@ target/
 data/*.duckdb
 data/*.duckdb.tmp
 *.bk
+PowerShellEditorServices.json
