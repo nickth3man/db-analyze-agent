@@ -370,13 +370,14 @@ impl DbContext {
 
     /// Classify a DuckDB error message into a short category string.
     fn classify_sql_error(err_msg: &str) -> String {
-        if err_msg.contains("Candidate bindings") {
+        let lower = err_msg.to_lowercase();
+        if lower.contains("candidate bindings") {
             "column_not_found".to_string()
-        } else if err_msg.contains("does not exist") {
+        } else if lower.contains("does not exist") {
             "table_not_found".to_string()
-        } else if err_msg.contains("Syntax error") {
+        } else if lower.contains("syntax error") {
             "syntax_error".to_string()
-        } else if err_msg.contains("Type mismatch") {
+        } else if lower.contains("type mismatch") {
             "type_mismatch".to_string()
         } else {
             "execution_error".to_string()

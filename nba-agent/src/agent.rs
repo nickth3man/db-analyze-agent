@@ -60,12 +60,12 @@ pub struct ChatMessage {
     pub name: Option<String>,
 }
 
-struct ToolResult {
-    reasoning: String,
-    param_str: String,
-    result_str: String,
-    elapsed_ms: u64,
-    row_count: usize,
+pub struct ToolResult {
+    pub reasoning: String,
+    pub param_str: String,
+    pub result_str: String,
+    pub elapsed_ms: u64,
+    pub row_count: usize,
 }
 
 /// Parsed OpenRouter chat completion.
@@ -114,7 +114,7 @@ const SAVE_DEBOUNCE_SECS: u64 = 5;
 /// arguments, mirroring the per-tool logic in `Agent::execute_tool`.
 /// Called before the tool executes so the frontend can show a "started" event
 /// while the operation is still in progress.
-fn args_to_tool_start_fields(name: &str, args: &Value) -> (String, String) {
+pub fn args_to_tool_start_fields(name: &str, args: &Value) -> (String, String) {
     match name {
         "run_sql" => {
             let reasoning = args["reasoning"].as_str().unwrap_or("Executing query").to_string();
@@ -791,6 +791,36 @@ impl Agent {
         s.replace('\'', "''")
     }
 
+    /// Normalize a user-provided season string to the `game.season_id` format
+    /// (e.g. "2022-23" or "2022" -> "22022"; "22022" passes through).
+    fn normalize_season(s: &str) -> String {
+        let s = s.trim();
+        if s.len() == 5 && s.chars().next().is_some_and(|c| c.is_ascii_digit()) {
+            return s.to_string();
+        }
+        if let Some(y) = s.split('-').next() {
+            if y.len() == 4 && y.starts_with("20") {
+                return format!("2{}", y);
+            }
+        }
+        s.to_string()
+    }
+
+    /// Normalize a user-provided season string to the `fact_team_game_stats.season_year`
+    /// format (e.g. "2022" -> "2022-23"; "2022-23" passes through).
+    fn normalize_season_year(s: &str) -> String {
+        let s = s.trim();
+        if s.len() == 7 && s.contains('-') {
+            return s.to_string();
+        }
+        if s.len() == 4 && s.starts_with("20") {
+            if let Ok(y) = s.parse::<i64>() {
+                return format!("{}-{:02}", y, (y + 1) % 100);
+            }
+        }
+        s.to_string()
+    }
+
     /// Execute multi-turn conversation turn
     pub async fn run_conversation(
         &self,
@@ -1020,7 +1050,16 @@ impl Agent {
     }
 
     /// Dispatch tool calls to DbContext. Returns timing metadata alongside results.
-    async fn execute_tool(&self, name: &str, args: &Value) -> ToolResult {
+    /// Run SQL and serialize rows, mapping errors to an "Error: ..." string
+    /// (shared by every tool arm so error handling stays uniform).
+    async fn query_json(&self, sql: String, max_rows: Option<usize>) -> String {
+        match self.db.run_sql(sql, max_rows).await {
+            Ok(rows) => serde_json::to_string_pretty(&rows).unwrap_or_default(),
+            Err(e) => format!("Error: {}", e),
+        }
+    }
+
+    pub async fn execute_tool(&self, name: &str, args: &Value) -> ToolResult {
         let start = std::time::Instant::now();
         let (reasoning, param_str, result_str) = match name {
             "run_sql" => {
@@ -1113,28 +1152,25 @@ impl Agent {
                 let p2 = args["player2"].as_str().unwrap_or("");
                 let season_filter = args["season"]
                     .as_str()
-                    .map(|s| format!(" AND g.season_id = '{}'", Self::sql_safe(s)))
+                    .map(|s| format!(" AND g.season_id = '{}'", Self::sql_safe(&Self::normalize_season(s))))
                     .unwrap_or_default();
                 let reasoning = format!("Comparing {} vs {}", p1, p2);
                 let sql = format!(
-                    "SELECT p.display_first_last as player_name, g.season_id, \
+                    "SELECT p.full_name as player_name, g.season_id, \
                            SUM(fpgs.points) as total_pts, ROUND(AVG(fpgs.points),1) as ppg, \
                            ROUND(AVG(fpgs.reb),1) as rpg, ROUND(AVG(fpgs.assists),1) as apg, \
                            COUNT(*) as games \
                      FROM fact_player_game_stats fpgs \
-                     JOIN common_player_info p ON fpgs.person_id = p.person_id \
+                     JOIN player p ON CAST(fpgs.person_id AS VARCHAR) = p.id \
                      JOIN game g ON fpgs.game_id = g.game_id \
-                     WHERE p.display_first_last IN ('{}', '{}'){} \
-                     GROUP BY p.display_first_last, g.season_id \
-                     ORDER BY p.display_first_last, g.season_id",
+                     WHERE p.full_name IN ('{}', '{}'){} \
+                     GROUP BY p.full_name, g.season_id \
+                     ORDER BY p.full_name, g.season_id",
                     Self::sql_safe(p1),
                     Self::sql_safe(p2),
                     season_filter
                 );
-                let result_str = match self.db.run_sql(sql.clone(), Some(100)).await {
-                    Ok(rows) => serde_json::to_string_pretty(&rows).unwrap_or_default(),
-                    Err(e) => format!("Error: {}", e),
-                };
+                let result_str = self.query_json(sql.clone(), Some(100)).await;
                 (reasoning, sql, result_str)
             }
             "compare_teams" => {
@@ -1142,24 +1178,25 @@ impl Agent {
                 let t2 = args["team2"].as_str().unwrap_or("");
                 let season_filter = args["season"]
                     .as_str()
-                    .map(|s| format!(" AND season_id = '{}'", Self::sql_safe(s)))
+                    .map(|s| format!(" AND season_year = '{}'", Self::sql_safe(&Self::normalize_season_year(s))))
                     .unwrap_or_default();
                 let reasoning = format!("Comparing {} vs {}", t1, t2);
                 let sql = format!(
-                    "SELECT team_name, season_id, SUM(pts) as total_pts, \
-                           ROUND(AVG(pts),1) as ppg, SUM(wins) as wins, \
-                           SUM(losses) as losses \
-                     FROM team_stats \
-                     WHERE team_name IN ('{}', '{}'){} \
-                     GROUP BY team_name, season_id ORDER BY team_name, season_id",
+                    "SELECT team_name, season_year, COUNT(*) as games, SUM(is_win) as wins, \
+                           COUNT(*) - SUM(is_win) as losses, \
+                           ROUND(AVG(pts),1) as ppg, ROUND(AVG(reb),1) as rpg, \
+                           ROUND(AVG(ast),1) as apg \
+                     FROM fact_team_game_stats \
+                     WHERE ((team_name ILIKE '%{}%' OR team_abbrev = UPPER('{}')) \
+                        OR (team_name ILIKE '%{}%' OR team_abbrev = UPPER('{}'))){} \
+                     GROUP BY team_name, season_year ORDER BY team_name, season_year",
                     Self::sql_safe(t1),
+                    Self::sql_safe(t1),
+                    Self::sql_safe(t2),
                     Self::sql_safe(t2),
                     season_filter
                 );
-                let result_str = match self.db.run_sql(sql.clone(), Some(100)).await {
-                    Ok(rows) => serde_json::to_string_pretty(&rows).unwrap_or_default(),
-                    Err(e) => format!("Error: {}", e),
-                };
+                let result_str = self.query_json(sql.clone(), Some(100)).await;
                 (reasoning, sql, result_str)
             }
             "find_streaks" => {
@@ -1172,11 +1209,11 @@ impl Agent {
                     _ => 0,
                 });
                 let metric_col = match streak_type {
-                    "30pt" | "points" => "pts",
-                    "10ast" | "assists" => "ast",
+                    "30pt" | "points" => "points",
+                    "10ast" | "assists" => "assists",
                     "rebounds" => "reb",
                     "wins" => "wl",
-                    _ => "pts",
+                    _ => "points",
                 };
                 let reasoning = format!("Finding {} streaks for {} (min {})", streak_type, player, min_val);
                 let safe_player = Self::sql_safe(player);
@@ -1186,17 +1223,17 @@ impl Agent {
                            SELECT fpgs.game_id, g.game_date, \
                                   CASE WHEN fpgs.is_win THEN 1 ELSE 0 END as won \
                            FROM fact_player_game_stats fpgs \
-                           JOIN common_player_info p ON fpgs.person_id = p.person_id \
+                           JOIN player p ON CAST(fpgs.person_id AS VARCHAR) = p.id \
                            JOIN game g ON fpgs.game_id = g.game_id \
-                           WHERE p.display_first_last = '{}' \
+                           WHERE p.full_name = '{}' \
                         ), \
                         streak_groups AS ( \
-                           SELECT *, SUM(CASE WHEN won = 0 THEN 1 ELSE 0 END) OVER (ORDER BY game_date) as grp \
-                           FROM game_flags WHERE won = 1 \
+                           SELECT *, SUM(CASE WHEN won = 0 THEN 1 ELSE 0 END) OVER (ORDER BY game_date, game_id) as grp \
+                           FROM game_flags \
                         ) \
                         SELECT MIN(game_date) as streak_start, MAX(game_date) as streak_end, \
                                COUNT(*) as streak_length \
-                        FROM streak_groups GROUP BY grp ORDER BY streak_length DESC LIMIT 10",
+                        FROM streak_groups WHERE won = 1 GROUP BY grp ORDER BY streak_length DESC LIMIT 10",
                         safe_player
                     )
                 } else {
@@ -1205,24 +1242,21 @@ impl Agent {
                            SELECT fpgs.game_id, g.game_date, fpgs.{}, \
                                   CASE WHEN fpgs.{} >= {} THEN 1 ELSE 0 END as above \
                            FROM fact_player_game_stats fpgs \
-                           JOIN common_player_info p ON fpgs.person_id = p.person_id \
+                           JOIN player p ON CAST(fpgs.person_id AS VARCHAR) = p.id \
                            JOIN game g ON fpgs.game_id = g.game_id \
-                           WHERE p.display_first_last = '{}' \
+                           WHERE p.full_name = '{}' \
                         ), \
                         streak_groups AS ( \
-                           SELECT *, SUM(CASE WHEN above = 0 THEN 1 ELSE 0 END) OVER (ORDER BY game_date) as grp \
-                           FROM game_flags WHERE above = 1 \
+                           SELECT *, SUM(CASE WHEN above = 0 THEN 1 ELSE 0 END) OVER (ORDER BY game_date, game_id) as grp \
+                           FROM game_flags \
                         ) \
                         SELECT MIN(game_date) as streak_start, MAX(game_date) as streak_end, \
                                COUNT(*) as streak_length, MIN({}) as min_val, MAX({}) as max_val \
-                        FROM streak_groups GROUP BY grp ORDER BY streak_length DESC LIMIT 10",
+                        FROM streak_groups WHERE above = 1 GROUP BY grp ORDER BY streak_length DESC LIMIT 10",
                         metric_col, metric_col, min_val, safe_player, metric_col, metric_col
                     )
                 };
-                let result_str = match self.db.run_sql(sql.clone(), Some(20)).await {
-                    Ok(rows) => serde_json::to_string_pretty(&rows).unwrap_or_default(),
-                    Err(e) => format!("Error: {}", e),
-                };
+                let result_str = self.query_json(sql.clone(), Some(20)).await;
                 (reasoning, sql, result_str)
             }
             "get_player_profile" => {
@@ -1230,31 +1264,28 @@ impl Agent {
                 let reasoning = format!("Building profile for {}", player);
                 let safe = Self::sql_safe(player);
                 let sql = format!(
-                    "SELECT 'career' as section, p.display_first_last as player_name, \
+                    "SELECT 'career' as section, p.full_name as player_name, \
                            COUNT(*) as games, SUM(fpgs.points) as total_pts, \
                            ROUND(AVG(fpgs.points),1) as ppg, ROUND(AVG(fpgs.reb),1) as rpg, \
                            ROUND(AVG(fpgs.assists),1) as apg \
                      FROM fact_player_game_stats fpgs \
-                     JOIN common_player_info p ON fpgs.person_id = p.person_id \
-                     WHERE p.display_first_last = '{}' \
-                     GROUP BY p.display_first_last \
+                     JOIN player p ON CAST(fpgs.person_id AS VARCHAR) = p.id \
+                     WHERE p.full_name = '{}' \
+                     GROUP BY p.full_name \
                      UNION ALL \
-                     SELECT 'best_season', p.display_first_last, \
+                     SELECT 'best_season', p.full_name, \
                            g.season_id, SUM(fpgs.points), \
                            ROUND(AVG(fpgs.points),1), ROUND(AVG(fpgs.reb),1), \
                            ROUND(AVG(fpgs.assists),1) \
                      FROM fact_player_game_stats fpgs \
-                     JOIN common_player_info p ON fpgs.person_id = p.person_id \
+                     JOIN player p ON CAST(fpgs.person_id AS VARCHAR) = p.id \
                      JOIN game g ON fpgs.game_id = g.game_id \
-                     WHERE p.display_first_last = '{}' \
-                     GROUP BY p.display_first_last, g.season_id \
+                     WHERE p.full_name = '{}' \
+                     GROUP BY p.full_name, g.season_id \
                      ORDER BY SUM(fpgs.points) DESC LIMIT 5",
                     safe, safe
                 );
-                let result_str = match self.db.run_sql(sql.clone(), Some(20)).await {
-                    Ok(rows) => serde_json::to_string_pretty(&rows).unwrap_or_default(),
-                    Err(e) => format!("Error: {}", e),
-                };
+                let result_str = self.query_json(sql.clone(), Some(20)).await;
                 (reasoning, sql, result_str)
             }
             "rank_performance" => {
@@ -1273,35 +1304,33 @@ impl Agent {
                     _ => ("points", "DESC"),
                 };
                 let where_clause = match scope {
-                    "franchise" => format!("WHERE team_name = '{}' ", Self::sql_safe(context)),
-                    "season" => format!("WHERE season_id = '{}' ", Self::sql_safe(context)),
-                    "career" => format!("WHERE player_name = '{}' ", Self::sql_safe(context)),
+                    "franchise" => format!("WHERE g.team_name_home ILIKE '%{}%' ", Self::sql_safe(context)),
+                    "season" => format!("WHERE g.season_id = '{}' ", Self::sql_safe(&Self::normalize_season(context))),
+                    "career" => format!("WHERE p.full_name = '{}' ", Self::sql_safe(context)),
                     _ => String::new(),
                 };
                 let sql = format!(
                     "WITH ranked AS ( \
-                       SELECT p.display_first_last as player_name, SUM(fpgs.{}) as stat_val, \
+                       SELECT p.full_name as player_name, SUM(fpgs.{}) as stat_val, \
                               ROW_NUMBER() OVER (ORDER BY SUM(fpgs.{}) {}) as rank \
                        FROM fact_player_game_stats fpgs \
-                       JOIN common_player_info p ON fpgs.person_id = p.person_id \
+                       JOIN player p ON CAST(fpgs.person_id AS VARCHAR) = p.id \
+                       JOIN game g ON fpgs.game_id = g.game_id \
                        {} \
-                       GROUP BY p.display_first_last \
+                       GROUP BY p.full_name \
                     ) \
                     SELECT * FROM ranked \
                     WHERE stat_val <= {} ORDER BY rank LIMIT 20",
                     rank_col, rank_col, order, where_clause, value
                 );
-                let result_str = match self.db.run_sql(sql.clone(), Some(20)).await {
-                    Ok(rows) => serde_json::to_string_pretty(&rows).unwrap_or_default(),
-                    Err(e) => format!("Error: {}", e),
-                };
+                let result_str = self.query_json(sql.clone(), Some(20)).await;
                 (reasoning, sql, result_str)
             }
             "find_leaders" => {
                 let stat = args["stat_name"].as_str().unwrap_or("points");
                 let season_filter = args["season"]
                     .as_str()
-                    .map(|s| format!(" AND season_id = '{}'", Self::sql_safe(s)))
+                    .map(|s| format!(" AND g.season_id = '{}'", Self::sql_safe(&Self::normalize_season(s))))
                     .unwrap_or_default();
                 let limit: usize = args["limit"].as_u64().unwrap_or(10) as usize;
                 let reasoning = format!("Finding {} leaders", stat);
@@ -1309,24 +1338,22 @@ impl Agent {
                     "points" => ("points", "ppg"),
                     "rebounds" => ("reb", "rpg"),
                     "assists" => ("assists", "apg"),
-                    "threes" => ("fg3m", "3pg"),
+                    "threes" => ("fg3m", "threes_pg"),
                     "steals" => ("steals", "spg"),
                     "blocks" => ("blocks", "bpg"),
                     _ => ("points", "ppg"),
                 };
                 let sql = format!(
-                    "SELECT p.display_first_last as player_name, ROUND(AVG(fpgs.{}),1) as {}, COUNT(*) as games \
+                    "SELECT p.full_name as player_name, ROUND(AVG(fpgs.{}),1) as {}, COUNT(*) as games \
                      FROM fact_player_game_stats fpgs \
-                     JOIN common_player_info p ON fpgs.person_id = p.person_id \
+                     JOIN player p ON CAST(fpgs.person_id AS VARCHAR) = p.id \
+                     JOIN game g ON fpgs.game_id = g.game_id \
                      WHERE 1=1{} \
-                     GROUP BY p.display_first_last HAVING COUNT(*) >= 10 \
+                     GROUP BY p.full_name HAVING COUNT(*) >= 10 \
                      ORDER BY {} DESC LIMIT {}",
                     col, label, season_filter, label, limit
                 );
-                let result_str = match self.db.run_sql(sql.clone(), Some(limit)).await {
-                    Ok(rows) => serde_json::to_string_pretty(&rows).unwrap_or_default(),
-                    Err(e) => format!("Error: {}", e),
-                };
+                let result_str = self.query_json(sql.clone(), Some(limit)).await;
                 (reasoning, sql, result_str)
             }
             "get_game_summary" => {
@@ -1336,25 +1363,20 @@ impl Agent {
                 let where_clause = if !game_id.is_empty() {
                     format!("WHERE g.game_id = '{}' ", Self::sql_safe(game_id))
                 } else if !game_date.is_empty() {
-                    format!("WHERE g.game_date = '{}' ", Self::sql_safe(game_date))
+                    format!("WHERE g.game_date::DATE = '{}'::DATE ", Self::sql_safe(game_date))
                 } else {
                     "".to_string()
                 };
                 let sql = format!(
                     "SELECT g.game_id, g.game_date, \
-                           ht.team_name as home_team, at.team_name as away_team, \
-                           ls.team_score as home_score, ls.opp_score as away_score \
+                           g.team_name_home as home_team, g.team_name_away as away_team, \
+                           g.pts_home as home_score, g.pts_away as away_score, \
+                           g.season_id \
                      FROM game g \
-                     JOIN line_score ls ON g.game_id = ls.game_id \
-                     JOIN team ht ON ls.team_id = ht.team_id \
-                     JOIN team at ON ls.opp_team_id = at.team_id \
                      {}ORDER BY g.game_date DESC LIMIT 5",
                     where_clause
                 );
-                let result_str = match self.db.run_sql(sql.clone(), Some(10)).await {
-                    Ok(rows) => serde_json::to_string_pretty(&rows).unwrap_or_default(),
-                    Err(e) => format!("Error: {}", e),
-                };
+                let result_str = self.query_json(sql.clone(), Some(10)).await;
                 (reasoning, sql, result_str)
             }
             "get_head_to_head" => {
@@ -1362,29 +1384,50 @@ impl Agent {
                 let t2 = args["team2"].as_str().unwrap_or("");
                 let season_filter = args["season"]
                     .as_str()
-                    .map(|s| format!(" AND g.season_id = '{}'", Self::sql_safe(s)))
+                    .map(|s| format!(" AND g.season_id = '{}'", Self::sql_safe(&Self::normalize_season(s))))
                     .unwrap_or_default();
                 let reasoning = format!("H2H: {} vs {}", t1, t2);
                 let safe_t1 = Self::sql_safe(t1);
                 let safe_t2 = Self::sql_safe(t2);
-                let sql = format!(
-                    "SELECT ht.team_name as home_team, at.team_name as away_team, \
-                           ls.team_score as home_score, ls.opp_score as away_score, \
-                           g.game_date \
-                     FROM game g \
-                     JOIN line_score ls ON g.game_id = ls.game_id \
-                     JOIN team ht ON ls.team_id = ht.team_id \
-                     JOIN team at ON ls.opp_team_id = at.team_id \
-                     WHERE (ht.team_name = '{}' AND at.team_name = '{}') \
-                        OR (ht.team_name = '{}' AND at.team_name = '{}'){} \
-                     ORDER BY g.game_date DESC LIMIT 20",
+                let meet_clause = format!(
+                    "WHERE ((g.team_name_home ILIKE '%{}%' AND g.team_name_away ILIKE '%{}%') \
+                        OR (g.team_name_home ILIKE '%{}%' AND g.team_name_away ILIKE '%{}%')){}",
                     safe_t1, safe_t2, safe_t2, safe_t1, season_filter
                 );
-                let result_str = match self.db.run_sql(sql.clone(), Some(20)).await {
-                    Ok(rows) => serde_json::to_string_pretty(&rows).unwrap_or_default(),
-                    Err(e) => format!("Error: {}", e),
+                let record_sql = format!(
+                    "SELECT team_name, COUNT(*) as games, SUM(wins) as wins, \
+                            COUNT(*) - SUM(wins) as losses \
+                     FROM ( \
+                       SELECT g.team_name_home as team_name, \
+                              CASE WHEN g.pts_home > g.pts_away THEN 1 ELSE 0 END as wins \
+                       FROM game g {} \
+                       UNION ALL \
+                       SELECT g.team_name_away, \
+                              CASE WHEN g.pts_away > g.pts_home THEN 1 ELSE 0 END \
+                       FROM game g {} \
+                     ) GROUP BY team_name",
+                    meet_clause, meet_clause
+                );
+                let games_sql = format!(
+                    "SELECT g.game_id, g.game_date, g.team_name_home, g.team_name_away, \
+                            g.pts_home, g.pts_away, g.season_id \
+                     FROM game g {} \
+                     ORDER BY g.game_date DESC LIMIT 20",
+                    meet_clause
+                );
+                let mut combined: Vec<Value> = Vec::new();
+                if let Ok(mut rows) = self.db.run_sql(record_sql.clone(), Some(5)).await {
+                    combined.append(&mut rows);
+                }
+                if let Ok(mut rows) = self.db.run_sql(games_sql.clone(), Some(20)).await {
+                    combined.append(&mut rows);
+                }
+                let result_str = if combined.is_empty() {
+                    "Error: no games found between these teams".to_string()
+                } else {
+                    serde_json::to_string_pretty(&combined).unwrap_or_default()
                 };
-                (reasoning, sql, result_str)
+                (reasoning, format!("{}\n{}", record_sql, games_sql), result_str)
             }
             "check_data_coverage" => {
                 let entity_type = args["entity_type"].as_str().unwrap_or("player");
@@ -1395,16 +1438,18 @@ impl Agent {
                         "SELECT 'fact_player_game_stats' as table_name, COUNT(*) as row_count, \
                                COUNT(DISTINCT g.season_id) as seasons \
                          FROM fact_player_game_stats fpgs \
-                         JOIN common_player_info p ON fpgs.person_id = p.person_id \
+                         JOIN player p ON CAST(fpgs.person_id AS VARCHAR) = p.id \
                          JOIN game g ON fpgs.game_id = g.game_id \
-                         WHERE p.display_first_last = '{}'",
+                         WHERE p.full_name = '{}'",
                         Self::sql_safe(entity_name)
                     ),
                     "team" => format!(
-                        "SELECT 'team_stats' as table_name, COUNT(*) as row_count, \
-                               MIN(season_id) as earliest, MAX(season_id) as latest, \
-                               COUNT(DISTINCT season_id) as seasons \
-                         FROM team_stats WHERE team_name = '{}'",
+                        "SELECT 'fact_team_game_stats' as table_name, COUNT(*) as row_count, \
+                               MIN(season_year) as earliest, MAX(season_year) as latest, \
+                               COUNT(DISTINCT season_year) as seasons \
+                         FROM fact_team_game_stats \
+                         WHERE team_name ILIKE '%{}%' OR team_abbrev = UPPER('{}')",
+                        Self::sql_safe(entity_name),
                         Self::sql_safe(entity_name)
                     ),
                     "season" => format!(
@@ -1416,10 +1461,7 @@ impl Agent {
                     ),
                     _ => "SELECT 'unknown' as table_name, 0 as row_count".to_string(),
                 };
-                let result_str = match self.db.run_sql(sql.clone(), Some(10)).await {
-                    Ok(rows) => serde_json::to_string_pretty(&rows).unwrap_or_default(),
-                    Err(e) => format!("Error: {}", e),
-                };
+                let result_str = self.query_json(sql.clone(), Some(10)).await;
                 (reasoning, sql, result_str)
             }
             "export_query_result" => {
@@ -1475,14 +1517,14 @@ impl Agent {
                 let safe_p2 = Self::sql_safe(p2);
                 let sql = format!(
                     "WITH player_stats AS ( \
-                       SELECT p.display_first_last as player_name, g.season_id, \
+                       SELECT p.full_name as player_name, g.season_id, \
                               AVG(fpgs.points) as ppg, AVG(fpgs.reb) as rpg, AVG(fpgs.assists) as apg, \
                               COUNT(*) as games \
                        FROM fact_player_game_stats fpgs \
-                       JOIN common_player_info p ON fpgs.person_id = p.person_id \
+                       JOIN player p ON CAST(fpgs.person_id AS VARCHAR) = p.id \
                        JOIN game g ON fpgs.game_id = g.game_id \
-                       WHERE p.display_first_last IN ('{}', '{}') \
-                       GROUP BY p.display_first_last, g.season_id \
+                       WHERE p.full_name IN ('{}', '{}') \
+                       GROUP BY p.full_name, g.season_id \
                      ), \
                      league_avg AS ( \
                        SELECT g2.season_id, AVG(fpgs2.points) as lg_ppg \
@@ -1498,10 +1540,7 @@ impl Agent {
                      ORDER BY ps.player_name, ps.season_id",
                     safe_p1, safe_p2
                 );
-                let result_str = match self.db.run_sql(sql.clone(), Some(100)).await {
-                    Ok(rows) => serde_json::to_string_pretty(&rows).unwrap_or_default(),
-                    Err(e) => format!("Error: {}", e),
-                };
+                let result_str = self.query_json(sql.clone(), Some(100)).await;
                 (reasoning, sql, result_str)
             }
             "game_reconstruction" => {
@@ -1511,22 +1550,20 @@ impl Agent {
                 let where_clause = if !game_id.is_empty() {
                     format!("WHERE pbp.game_id = '{}' ", Self::sql_safe(game_id))
                 } else if !game_date.is_empty() {
-                    format!("WHERE pbp.game_date = '{}' ", Self::sql_safe(game_date))
+                    format!("WHERE g.game_date::DATE = '{}'::DATE ", Self::sql_safe(game_date))
                 } else {
                     "".to_string()
                 };
                 let sql = format!(
-                    "SELECT pbp.game_id, pbp.event_type, pbp.player_name, \
-                           pbp.visitor_desc, pbp.home_desc, pbp.period, \
-                           pbp.pctimestring, pbp.score, pbp.scoremargin \
+                    "SELECT pbp.game_id, pbp.eventnum, pbp.eventmsgtype, pbp.period, \
+                           pbp.pctimestring, pbp.homedescription, pbp.visitordescription, \
+                           pbp.score, pbp.scoremargin, pbp.player1_name \
                      FROM play_by_play pbp \
-                     {}ORDER BY pbp.period, pbp.event_num LIMIT 200",
+                     JOIN game g ON pbp.game_id = g.game_id \
+                     {}ORDER BY pbp.period, pbp.eventnum LIMIT 200",
                     where_clause
                 );
-                let result_str = match self.db.run_sql(sql.clone(), Some(200)).await {
-                    Ok(rows) => serde_json::to_string_pretty(&rows).unwrap_or_default(),
-                    Err(e) => format!("Error: {}", e),
-                };
+                let result_str = self.query_json(sql.clone(), Some(200)).await;
                 (reasoning, sql, result_str)
             }
             "expand_player_profile" => {
@@ -1534,37 +1571,34 @@ impl Agent {
                 let reasoning = format!("Full profile for {}", player);
                 let safe = Self::sql_safe(player);
                 let sql = format!(
-                    "SELECT 'career' as section, p.display_first_last as player_name, \
-                           COUNT(*) as games, SUM(fpgs.points) as total_pts, \
+                    "(SELECT 'career' as section, p.full_name as player_name, \
+                           CAST(COUNT(*) AS VARCHAR) as games, SUM(fpgs.points) as total_pts, \
                            ROUND(AVG(fpgs.points),1) as ppg, ROUND(AVG(fpgs.reb),1) as rpg, \
                            ROUND(AVG(fpgs.assists),1) as apg, MAX(fpgs.points) as career_high_pts \
                      FROM fact_player_game_stats fpgs \
-                     JOIN common_player_info p ON fpgs.person_id = p.person_id \
-                     WHERE p.display_first_last = '{}' GROUP BY p.display_first_last \
+                     JOIN player p ON CAST(fpgs.person_id AS VARCHAR) = p.id \
+                     WHERE p.full_name = '{}' GROUP BY p.full_name) \
                      UNION ALL \
-                     SELECT 'best_season', p.display_first_last, \
+                     (SELECT 'best_season', p.full_name, \
                            g.season_id, SUM(fpgs.points), ROUND(AVG(fpgs.points),1), ROUND(AVG(fpgs.reb),1), \
                            ROUND(AVG(fpgs.assists),1), MAX(fpgs.points) \
                      FROM fact_player_game_stats fpgs \
-                     JOIN common_player_info p ON fpgs.person_id = p.person_id \
+                     JOIN player p ON CAST(fpgs.person_id AS VARCHAR) = p.id \
                      JOIN game g ON fpgs.game_id = g.game_id \
-                     WHERE p.display_first_last = '{}' \
-                     GROUP BY p.display_first_last, g.season_id ORDER BY SUM(fpgs.points) DESC LIMIT 5 \
+                     WHERE p.full_name = '{}' \
+                     GROUP BY p.full_name, g.season_id ORDER BY SUM(fpgs.points) DESC LIMIT 5) \
                      UNION ALL \
-                     SELECT 'playoff', p.display_first_last, \
-                           COUNT(*), SUM(fpgs.points), ROUND(AVG(fpgs.points),1), ROUND(AVG(fpgs.reb),1), \
+                     (SELECT 'playoff', p.full_name, \
+                           CAST(COUNT(*) AS VARCHAR), SUM(fpgs.points), ROUND(AVG(fpgs.points),1), ROUND(AVG(fpgs.reb),1), \
                            ROUND(AVG(fpgs.assists),1), MAX(fpgs.points) \
                      FROM fact_player_game_stats fpgs \
-                     JOIN common_player_info p ON fpgs.person_id = p.person_id \
+                     JOIN player p ON CAST(fpgs.person_id AS VARCHAR) = p.id \
                      JOIN game g ON fpgs.game_id = g.game_id \
-                     WHERE p.display_first_last = '{}' AND g.season_id LIKE '%P%' \
-                     GROUP BY p.display_first_last",
+                     WHERE p.full_name = '{}' AND g.season_id LIKE '4%' \
+                     GROUP BY p.full_name)",
                     safe, safe, safe
                 );
-                let result_str = match self.db.run_sql(sql.clone(), Some(30)).await {
-                    Ok(rows) => serde_json::to_string_pretty(&rows).unwrap_or_default(),
-                    Err(e) => format!("Error: {}", e),
-                };
+                let result_str = self.query_json(sql.clone(), Some(30)).await;
                 (reasoning, sql, result_str)
             }
             _ => ("Unknown tool".to_string(), name.to_string(), format!("Tool `{}` not supported.", name)),
@@ -1575,7 +1609,11 @@ impl Agent {
     }
 
     /// Number of tracked sessions (for /api/stats consumers).
+    ///
+    /// moka's  is an estimate that stays 0 until pending internal
+    /// tasks are flushed, so run those first (see moka docs on ).
     pub fn session_count(&self) -> usize {
+        self.sessions.run_pending_tasks();
         self.sessions.entry_count() as usize
     }
 
