@@ -1,4 +1,3 @@
-
 // ---------------------------------------------------------------------------
 // Query history tests (DbContext-level)
 // ---------------------------------------------------------------------------
@@ -13,6 +12,11 @@ fn test_db_history_entry_serialization() {
         row_count: 5,
         elapsed_ms: 234,
         success: true,
+        error_category: None,
+        cache_hit: false,
+        model: None,
+        session_id: None,
+        tool_name: None,
     };
     let json = serde_json::to_string(&entry).unwrap();
     assert!(json.contains("SELECT COUNT(*)"), "Should contain SQL");
@@ -32,6 +36,11 @@ fn test_db_history_entry_failure() {
         row_count: 0,
         elapsed_ms: 12,
         success: false,
+        error_category: Some("execution_error".to_string()),
+        cache_hit: false,
+        model: None,
+        session_id: None,
+        tool_name: None,
     };
     let json = serde_json::to_string(&entry).unwrap();
     assert!(json.contains("\"success\":false"), "Should serialize failure status");

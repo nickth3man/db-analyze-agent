@@ -1,12 +1,12 @@
 // Coverage gap: Agent method tests (no HTTP needed — Agent::new just reads env vars)
 use nba_agent::agent::Agent;
 use nba_agent::db::DbContext;
-use serde_json::json;
 use std::env;
-use std::time::Duration;
 
 fn setup() {
-    unsafe { env::set_var("OPENROUTER_API_KEY", "test-key-for-coverage"); }
+    unsafe {
+        env::set_var("OPENROUTER_API_KEY", "test-key-for-coverage");
+    }
 }
 
 fn make_agent() -> Option<Agent> {
@@ -15,26 +15,29 @@ fn make_agent() -> Option<Agent> {
     if !std::path::Path::new(&db_path).exists() {
         return None;
     }
-    let rt = tokio::runtime::Builder::new_current_thread()
-        .enable_all().build().ok()?;
+    let rt = tokio::runtime::Builder::new_current_thread().enable_all().build().ok()?;
     rt.block_on(async {
         let db = DbContext::new(&db_path).ok()?;
         let insights = db.generate_insights().await;
         let brief = DbContext::format_insights_for_prompt(&insights);
-        Agent::new(db, brief).await.ok()
+        Agent::new(db, brief, "data/sessions.json".to_string()).await.ok()
     })
 }
 
-fn agent_test<F>(mut f: F) where F: FnMut(&Agent) {
-    if let Some(a) = make_agent() { f(&a); }
+fn agent_test<F>(mut f: F)
+where
+    F: FnMut(&Agent),
+{
+    if let Some(a) = make_agent() {
+        f(&a);
+    }
 }
 
-// === Agent::list_sessions ===
+// === Agent::session_count ===
 #[test]
-fn test_list_sessions_no_sessions() {
+fn test_session_count_empty() {
     agent_test(|a| {
-        let sessions = a.list_sessions();
-        assert!(sessions.is_empty());
+        assert_eq!(a.session_count(), 0);
     });
 }
 
@@ -55,28 +58,30 @@ fn test_reset_session_missing() {
 }
 
 // === DbContext::list_history ===
-use nba_agent::db::DbHistoryEntry;
 #[test]
 fn test_list_history_empty() {
-    agent_test_ref(|agent, db| {
+    agent_test_ref(|_agent, db| {
         let history = db.list_history();
         assert!(history.is_empty());
     });
 }
 
 // === Context helper for db access ===
-fn agent_test_ref<F>(mut f: F) where F: FnMut(&Agent, &DbContext) {
+fn agent_test_ref<F>(_f: F)
+where
+    F: FnMut(&Agent, &DbContext),
+{
     setup();
     let db_path = env::var("DATABASE_PATH").unwrap_or_else(|_| "../data/nba-data.duckdb".to_string());
     let db = match DbContext::new(&db_path) {
         Ok(d) => d,
-        Err(_) => { println!("Skipped: DB not found"); return; }
+        Err(_) => {
+            println!("Skipped: DB not found");
+            return;
+        }
     };
-    let rt = tokio::runtime::Builder::new_current_thread()
-        .enable_all().build().unwrap();
-    let result = rt.block_on(async {
-        db.run_sql("SELECT 1 as test;".to_string(), Some(1)).await
-    });
+    let rt = tokio::runtime::Builder::new_current_thread().enable_all().build().unwrap();
+    let result = rt.block_on(async { db.run_sql("SELECT 1 as test;".to_string(), Some(1)).await });
     assert!(result.is_ok());
 }
 
@@ -85,8 +90,7 @@ fn agent_test_ref<F>(mut f: F) where F: FnMut(&Agent, &DbContext) {
 fn test_query_cache_different_keys_for_same_query() {
     let db_path = env::var("DATABASE_PATH").unwrap_or_else(|_| "../data/nba-data.duckdb".to_string());
     let db = DbContext::new(&db_path).expect("DB must exist");
-    let rt = tokio::runtime::Builder::new_current_thread()
-        .enable_all().build().unwrap();
+    let rt = tokio::runtime::Builder::new_current_thread().enable_all().build().unwrap();
 
     rt.block_on(async {
         // First query - should hit the DB

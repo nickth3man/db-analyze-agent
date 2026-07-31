@@ -3,12 +3,16 @@ use parking_lot::Mutex;
 use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value, json};
 use std::sync::Arc;
+use std::sync::atomic::{AtomicUsize, Ordering};
 
 #[derive(Clone)]
 pub struct DbContext {
     pool: r2d2::Pool<duckdb::DuckdbConnectionManager>,
     cache: moka::sync::Cache<String, Vec<Value>>,
     history: Arc<Mutex<Vec<DbHistoryEntry>>>,
+    lifetime_query_count: Arc<AtomicUsize>,
+    /// Default row cap for run_sql (env: ROW_CAP, default 50).
+    row_cap: usize,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -18,8 +22,17 @@ pub struct DbHistoryEntry {
     pub row_count: usize,
     pub elapsed_ms: u64,
     pub success: bool,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub error_category: Option<String>,
+    #[serde(default)]
+    pub cache_hit: bool,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub model: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub session_id: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub tool_name: Option<String>,
 }
-
 
 #[derive(Debug, Serialize, Deserialize)]
 pub struct TableSchemaInfo {
@@ -89,39 +102,56 @@ pub struct InsightsResponse {
 
 impl DbContext {
     pub fn new(path: &str) -> DuckResult<Self> {
-        let config = Config::default().access_mode(AccessMode::ReadOnly)?;
+        // Cap each DuckDB instance's buffer pool. DuckDB defaults to ~80% of
+        // physical RAM per instance; with several concurrent instances (e.g.
+        // parallel tests each opening the warehouse) RAM is oversubscribed and
+        // the machine thrashes. Override via DUCKDB_MEMORY_LIMIT (e.g. "4GB").
+        let memory_limit = std::env::var("DUCKDB_MEMORY_LIMIT").unwrap_or_else(|_| "2GB".to_string());
+        let config = Config::default().access_mode(AccessMode::ReadOnly)?.max_memory(&memory_limit)?;
         let manager = duckdb::DuckdbConnectionManager::file_with_flags(path, config)?;
         let pool = r2d2::Pool::builder()
             .max_size(16)
             .build(manager)
             .map_err(|e| duckdb::Error::DuckDBFailure(duckdb::ffi::Error::new(1), Some(e.to_string())))?;
+        let cache_max: u64 =
+            std::env::var("CACHE_MAX_CAPACITY").unwrap_or_else(|_| "200".to_string()).parse().unwrap_or(200);
+        let cache_ttl: u64 = std::env::var("CACHE_TTL_SECS").unwrap_or_else(|_| "60".to_string()).parse().unwrap_or(60);
         let cache = moka::sync::Cache::builder()
-            .max_capacity(200)
-            .time_to_live(std::time::Duration::from_secs(60))
+            .max_capacity(cache_max)
+            .time_to_live(std::time::Duration::from_secs(cache_ttl))
             .build();
+        let row_cap: usize = std::env::var("ROW_CAP").unwrap_or_else(|_| "50".to_string()).parse().unwrap_or(50);
         Ok(Self {
             pool,
             cache,
             history: Arc::new(Mutex::new(Vec::new())),
+            lifetime_query_count: Arc::new(AtomicUsize::new(0)),
+            row_cap,
         })
     }
 
     /// Execute arbitrary SQL and return results capped at `max_rows` (default 50).
     /// Results are cached with a 60-second TTL for repeated queries.
     pub async fn run_sql(&self, query: String, max_rows_opt: Option<usize>) -> anyhow::Result<Vec<Value>> {
+        // Lifetime counter: every call counts, success or failure.
+        self.lifetime_query_count.fetch_add(1, Ordering::Relaxed);
+
         // Validate: reject destructive SQL patterns
         if let Err(reason) = Self::validate_sql(&query) {
+            self.record_history(&query, 0, 0, false, Some("validation".to_string()), false);
             return Err(anyhow::anyhow!("SQL rejected: {}", reason));
         }
         let query_saved = query.clone();
-        let max_rows = max_rows_opt.unwrap_or(50);
+        let max_rows = max_rows_opt.unwrap_or(self.row_cap);
         let cache_key = format!("{}|{}", query.trim(), max_rows);
         // Check cache (moka handles TTL and concurrency internally)
         if let Some(cached) = self.cache.get(&cache_key) {
+            self.record_history(&query_saved, cached.len(), 0, true, Some("cache_hit".to_string()), true);
             return Ok(cached);
         }
 
         let pool = self.pool.clone();
+        let started = std::time::Instant::now();
         let results = tokio::task::spawn_blocking(move || -> anyhow::Result<Vec<Value>> {
             let conn = pool.get()?;
             let mut stmt = conn.prepare(&query)?;
@@ -194,48 +224,157 @@ impl DbContext {
 
             Ok(results)
         })
-        .await??;
-        // Cache successful results in moka (automatically evicts according to 60s TTL and max 200 items capacity)
-        self.cache.insert(cache_key, results.clone());
-        // Record to history
-        {
-            let entry = DbHistoryEntry {
-                timestamp: std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_secs()).unwrap_or(0),
-                sql: query_saved,
-                row_count: results.len(),
-                elapsed_ms: 0,
-                success: true,
-            };
-            let mut history = self.history.lock();
-            history.push(entry);
-            if history.len() > 200 { history.remove(0); }
+        .await;
+
+        match results {
+            Ok(Ok(rows)) => {
+                // Cache successful results
+                self.cache.insert(cache_key, rows.clone());
+                self.record_history(&query_saved, rows.len(), started.elapsed().as_millis() as u64, true, None, false);
+                Ok(rows)
+            }
+            Ok(Err(e)) => {
+                let err_msg = e.to_string();
+                let category = Self::classify_sql_error(&err_msg);
+                self.record_history(
+                    &query_saved,
+                    0,
+                    started.elapsed().as_millis() as u64,
+                    false,
+                    Some(category),
+                    false,
+                );
+                Err(e)
+            }
+            Err(join_err) => {
+                self.record_history(
+                    &query_saved,
+                    0,
+                    started.elapsed().as_millis() as u64,
+                    false,
+                    Some("spawn_failure".to_string()),
+                    false,
+                );
+                Err(join_err.into())
+            }
         }
-        Ok(results)
     }
 
-    /// Validate SQL query: reject destructive patterns. Even though the DB
-    /// is read-only, this provides defense-in-depth with clear error messages.
+    /// Record a query execution to the bounded history ring buffer.
+    fn record_history(
+        &self,
+        sql: &str,
+        row_count: usize,
+        elapsed_ms: u64,
+        success: bool,
+        error_category: Option<String>,
+        cache_hit: bool,
+    ) {
+        let entry = DbHistoryEntry {
+            timestamp: std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map(|d| d.as_secs())
+                .unwrap_or(0),
+            sql: sql.to_string(),
+            row_count,
+            elapsed_ms,
+            success,
+            error_category,
+            cache_hit,
+            model: None,
+            session_id: None,
+            tool_name: None,
+        };
+        let mut history = self.history.lock();
+        history.push(entry);
+        if history.len() > 200 {
+            history.remove(0);
+        }
+    }
+
+    /// Lifetime count of SQL executions (success + failure + cache hit).
+    pub fn get_lifetime_query_count(&self) -> usize {
+        self.lifetime_query_count.load(Ordering::Relaxed)
+    }
+
+    /// Classify a DuckDB error message into a short category string.
+    fn classify_sql_error(err_msg: &str) -> String {
+        if err_msg.contains("Candidate bindings") {
+            "column_not_found".to_string()
+        } else if err_msg.contains("does not exist") {
+            "table_not_found".to_string()
+        } else if err_msg.contains("Syntax error") {
+            "syntax_error".to_string()
+        } else if err_msg.contains("Type mismatch") {
+            "type_mismatch".to_string()
+        } else {
+            "execution_error".to_string()
+        }
+    }
+
+    /// Validate SQL query using AST parsing. Rejects destructive statements
+    /// even when keywords appear inside comments or string literals.
+    ///
+    /// Allowed: SELECT, WITH (CTE), EXPLAIN, SHOW, DESCRIBE, PRAGMA (read-only)
+    /// Rejected: DDL (DROP/ALTER/CREATE/TRUNCATE), DML writes (INSERT/UPDATE/DELETE/MERGE/REPLACE)
     pub fn validate_sql(query: &str) -> Result<(), String> {
-        let upper = query.trim().to_uppercase();
-        let first_word = upper.split_whitespace().next().unwrap_or("");
+        use sqlparser::ast::Statement;
+        use sqlparser::dialect::DuckDbDialect;
+        use sqlparser::parser::Parser;
 
-        // Block DDL statements
-        for keyword in &["DROP", "ALTER", "CREATE", "TRUNCATE"] {
-            if upper.starts_with(keyword) || upper.contains(&format!(" {}", keyword)) {
-                return Err(format!("{} statements are not allowed on this read-only agent", keyword));
-            }
+        let trimmed = query.trim();
+        if trimmed.is_empty() {
+            return Err("Empty query".to_string());
         }
 
-        // Block DML write statements
-        for keyword in &["INSERT", "UPDATE", "DELETE", "MERGE", "REPLACE"] {
-            if first_word == *keyword || upper.starts_with(keyword) {
-                return Err(format!("{} statements are not allowed (database is read-only)", keyword));
+        // Fast-path: PRAGMA is safe if it's a read-only pragma
+        let upper = trimmed.to_uppercase();
+        if upper.starts_with("PRAGMA") {
+            let read_only_pragmas = ["TABLE_INFO", "DATABASE_LIST", "TABLES", "COLUMNS"];
+            if read_only_pragmas.iter().any(|p| upper.contains(p)) {
+                return Ok(());
             }
-        }
-
-        // Block PRAGMA writes
-        if first_word == "PRAGMA" && !upper.contains("TABLE_INFO") && !upper.contains("DATABASE_LIST") {
             return Err("PRAGMA write statements are not allowed".to_string());
+        }
+
+        // Parse with DuckDB dialect
+        let dialect = DuckDbDialect {};
+        let statements = Parser::parse_sql(&dialect, trimmed).map_err(|e| format!("SQL parse error: {}", e))?;
+
+        if statements.is_empty() {
+            return Err("Empty query after parsing".to_string());
+        }
+
+        for stmt in &statements {
+            match stmt {
+                // Allowed read-only statements
+                Statement::Query(_) => {} // SELECT, WITH
+                Statement::Explain { .. } | Statement::ExplainTable { .. } => {}
+                Statement::ShowTables { .. }
+                | Statement::ShowSchemas { .. }
+                | Statement::ShowDatabases { .. }
+                | Statement::ShowColumns { .. } => {}
+                // Everything else is rejected
+                other => {
+                    let stmt_name = format!("{:?}", other);
+                    let kind = if stmt_name.contains("Drop")
+                        || stmt_name.contains("Alter")
+                        || stmt_name.contains("Create")
+                        || stmt_name.contains("Truncate")
+                    {
+                        "DDL"
+                    } else if stmt_name.contains("Insert")
+                        || stmt_name.contains("Update")
+                        || stmt_name.contains("Delete")
+                        || stmt_name.contains("Merge")
+                    {
+                        "DML write"
+                    } else {
+                        "unsupported"
+                    };
+                    return Err(format!("{} statements are not allowed on this read-only agent", kind));
+                }
+            }
         }
 
         Ok(())
@@ -248,19 +387,14 @@ impl DbContext {
         let bad_col = extract_between(error_msg, "Referenced column \"", "\" not found")?;
 
         // Extract candidates: "Candidate bindings: \"A\", \"B\", ..."
-        let candidates_str = error_msg
-            .find("Candidate bindings:")
-            .and_then(|pos| {
-                let after = &error_msg[pos + "Candidate bindings:".len()..];
-                // Take everything until the next line or end
-                after.split('\n').next()
-            })?;
+        let candidates_str = error_msg.find("Candidate bindings:").and_then(|pos| {
+            let after = &error_msg[pos + "Candidate bindings:".len()..];
+            // Take everything until the next line or end
+            after.split('\n').next()
+        })?;
 
-        let candidates: Vec<&str> = candidates_str
-            .split(',')
-            .map(|s| s.trim().trim_matches('"'))
-            .filter(|s| !s.is_empty())
-            .collect();
+        let candidates: Vec<&str> =
+            candidates_str.split(',').map(|s| s.trim().trim_matches('"')).filter(|s| !s.is_empty()).collect();
 
         if candidates.is_empty() {
             return None;
@@ -347,12 +481,7 @@ impl DbContext {
             let columns = Self::get_columns_from_info(&conn, &tbl)?;
             let sample_rows = Self::get_sample_rows_json(&conn, &tbl)?;
 
-            Ok(TableSchemaInfo {
-                table_name: tbl,
-                columns,
-                sample_rows,
-                total_rows: None,
-            })
+            Ok(TableSchemaInfo { table_name: tbl, columns, sample_rows, total_rows: None })
         })
         .await??;
 
@@ -367,11 +496,7 @@ impl DbContext {
         let mut rows = stmt.query([table_name])?;
         let mut columns = Vec::new();
         while let Some(row) = rows.next()? {
-            columns.push(ColumnInfo {
-                name: row.get(0)?,
-                data_type: row.get(1)?,
-                is_nullable: row.get(2)?,
-            });
+            columns.push(ColumnInfo { name: row.get(0)?, data_type: row.get(1)?, is_nullable: row.get(2)? });
         }
         Ok(columns)
     }
@@ -437,9 +562,7 @@ impl DbContext {
     /// Uses DuckDB's catalog-estimated row counts for speed (no table scans).
     pub async fn build_enriched_schema(&self, table_filter: Option<&[&str]>) -> anyhow::Result<EnrichedSchema> {
         let pool = self.pool.clone();
-        let filter: Vec<String> = table_filter
-            .map(|f| f.iter().map(|s| s.to_string()).collect())
-            .unwrap_or_default();
+        let filter: Vec<String> = table_filter.map(|f| f.iter().map(|s| s.to_string()).collect()).unwrap_or_default();
 
         tokio::task::spawn_blocking(move || -> anyhow::Result<EnrichedSchema> {
             let conn = pool.get()?;
@@ -647,8 +770,12 @@ impl DbContext {
         out.push_str("\n--- Key Table Schemas (top 20 by row count) ---\n");
         let detailed: Vec<&&EnrichedTable> = sorted.iter().filter(|t| t.row_count > 0).take(20).collect();
         for t in &detailed {
-            out.push_str(&format!("\nTable `{}` ({} rows, {} columns):\n",
-                t.table_name, fmt_num(t.row_count), t.column_count));
+            out.push_str(&format!(
+                "\nTable `{}` ({} rows, {} columns):\n",
+                t.table_name,
+                fmt_num(t.row_count),
+                t.column_count
+            ));
             if let Some((min_d, max_d)) = &t.date_range {
                 out.push_str(&format!("  Date range: {} → {}\n", min_d, max_d));
             }
@@ -664,8 +791,10 @@ impl DbContext {
                 if !col.sample_values.is_empty() {
                     flags.push_str(&format!(" e.g.({})", col.sample_values.join(", ")));
                 }
-                out.push_str(&format!("  - {}: {}{}{}\n",
-                    col.name, col.data_type,
+                out.push_str(&format!(
+                    "  - {}: {}{}{}\n",
+                    col.name,
+                    col.data_type,
                     if col.is_nullable { " NULL?" } else { "" },
                     flags,
                 ));
@@ -679,29 +808,64 @@ impl DbContext {
     /// Each card runs a specific SQL query; failures are isolated per-card.
     pub async fn generate_insights(&self) -> InsightsResponse {
         let cards = vec![
-            self.insight_card("total_games", "Total Games", "stats",
+            self.insight_card(
+                "total_games",
+                "Total Games",
+                "stats",
                 "SELECT COUNT(*) as val FROM game;",
-                "All-time NBA games in database").await,
-            self.insight_card("total_players", "Total Players", "stats",
+                "All-time NBA games in database",
+            )
+            .await,
+            self.insight_card(
+                "total_players",
+                "Total Players",
+                "stats",
                 "SELECT COUNT(*) as val FROM player;",
-                "Unique players tracked").await,
-            self.insight_card("total_teams", "Total Teams", "stats",
+                "Unique players tracked",
+            )
+            .await,
+            self.insight_card(
+                "total_teams",
+                "Total Teams",
+                "stats",
                 "SELECT COUNT(*) as val FROM team;",
-                "Franchises and teams").await,
-            self.insight_card("season_range", "Season Coverage", "range",
+                "Franchises and teams",
+            )
+            .await,
+            self.insight_card(
+                "season_range",
+                "Season Coverage",
+                "range",
                 "SELECT MIN(season_id) as min_s, MAX(season_id) as max_s FROM game;",
-                "NBA seasons in database").await,
-            self.insight_card("recent_season", "Most Recent Season", "range",
+                "NBA seasons in database",
+            )
+            .await,
+            self.insight_card(
+                "recent_season",
+                "Most Recent Season",
+                "range",
                 "SELECT MAX(season_id) as val FROM game;",
-                "Latest NBA season").await,
-            self.insight_card("largest_table", "Largest Table", "meta",
+                "Latest NBA season",
+            )
+            .await,
+            self.insight_card(
+                "largest_table",
+                "Largest Table",
+                "meta",
                 "SELECT table_name, estimated_size FROM duckdb_tables() \
                  WHERE schema_name='main' AND estimated_size >= 0 \
                  ORDER BY estimated_size DESC LIMIT 1;",
-                "Table with most rows").await,
-            self.insight_card("total_tables", "Database Tables", "meta",
+                "Table with most rows",
+            )
+            .await,
+            self.insight_card(
+                "total_tables",
+                "Database Tables",
+                "meta",
                 "SELECT COUNT(*) as val FROM information_schema.tables WHERE table_schema='main';",
-                "Total analytical tables").await,
+                "Total analytical tables",
+            )
+            .await,
         ];
 
         let total = cards.len();
@@ -709,7 +873,10 @@ impl DbContext {
         let total_tables = self.count_tables().await;
         InsightsResponse {
             cards,
-            generated_at: format!("{}", std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_secs()).unwrap_or(0)),
+            generated_at: format!(
+                "{}",
+                std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_secs()).unwrap_or(0)
+            ),
             total_queries: total,
             successful,
             total_tables,
@@ -717,20 +884,17 @@ impl DbContext {
     }
 
     async fn count_tables(&self) -> usize {
-        self.run_sql("SELECT COUNT(*) as val FROM information_schema.tables WHERE table_schema='main';".to_string(), Some(1)).await
-            .ok()
-            .and_then(|rows| rows.first()?.get("val")?.as_i64())
-            .unwrap_or(0) as usize
+        self.run_sql(
+            "SELECT COUNT(*) as val FROM information_schema.tables WHERE table_schema='main';".to_string(),
+            Some(1),
+        )
+        .await
+        .ok()
+        .and_then(|rows| rows.first()?.get("val")?.as_i64())
+        .unwrap_or(0) as usize
     }
 
-    async fn insight_card(
-        &self,
-        id: &str,
-        title: &str,
-        category: &str,
-        query: &str,
-        subtitle: &str,
-    ) -> InsightCard {
+    async fn insight_card(&self, id: &str, title: &str, category: &str, query: &str, subtitle: &str) -> InsightCard {
         match self.run_sql(query.to_string(), Some(1)).await {
             Ok(rows) if !rows.is_empty() => {
                 let first = &rows[0];
@@ -742,16 +906,29 @@ impl DbContext {
                     }
                 } else if let Some(v) = first.get("name") {
                     v.to_string().trim_matches('"').to_string()
-                } else if let Some(v) = first.get("total_pts").or_else(|| first.get("total_threes")).or_else(|| first.get("games")) {
+                } else if let Some(v) =
+                    first.get("total_pts").or_else(|| first.get("total_threes")).or_else(|| first.get("games"))
+                {
                     if let Some(n) = v.as_i64() {
                         Self::format_num_comma(n)
                     } else {
                         v.to_string().trim_matches('"').to_string()
                     }
                 } else if let Some(v) = first.get("table_name") {
-                    format!("{} ({} rows)", v.to_string().trim_matches('"'), first.get("estimated_size").map(|e| Self::format_num_comma(e.as_i64().unwrap_or(0))).unwrap_or_default())
+                    format!(
+                        "{} ({} rows)",
+                        v.to_string().trim_matches('"'),
+                        first
+                            .get("estimated_size")
+                            .map(|e| Self::format_num_comma(e.as_i64().unwrap_or(0)))
+                            .unwrap_or_default()
+                    )
                 } else if let Some(v) = first.get("min_s") {
-                    format!("{} – {}", v.to_string().trim_matches('"'), first.get("max_s").map(|m| m.to_string().trim_matches('"').to_string()).unwrap_or_default())
+                    format!(
+                        "{} – {}",
+                        v.to_string().trim_matches('"'),
+                        first.get("max_s").map(|m| m.to_string().trim_matches('"').to_string()).unwrap_or_default()
+                    )
                 } else {
                     serde_json::to_string(&first).unwrap_or_else(|_| "—".to_string())
                 };
@@ -795,25 +972,31 @@ impl DbContext {
         out
     }
 
-fn format_num_comma(n: i64) -> String {
-    if n < 0 { return "?".to_string(); }
-    if n < 1000 { return n.to_string(); }
-    let s = n.to_string();
-    let len = s.len();
-    let mut out = String::with_capacity(len + len / 3);
-    for (i, c) in s.chars().enumerate() {
-        if i > 0 && (len - i) % 3 == 0 { out.push(','); }
-        out.push(c);
+    fn format_num_comma(n: i64) -> String {
+        if n < 0 {
+            return "?".to_string();
+        }
+        if n < 1000 {
+            return n.to_string();
+        }
+        let s = n.to_string();
+        let len = s.len();
+        let mut out = String::with_capacity(len + len / 3);
+        for (i, c) in s.chars().enumerate() {
+            if i > 0 && (len - i) % 3 == 0 {
+                out.push(',');
+            }
+            out.push(c);
+        }
+        out
     }
-    out
-}
-
-    /// Get curated schema context overview for key entities
 
     /// List recent query history entries (most recent first, capped at 50).
     pub fn list_history(&self) -> Vec<DbHistoryEntry> {
         self.history.lock().iter().rev().take(50).cloned().collect()
     }
+
+    /// Get curated schema context overview for key entities
     pub async fn get_schema_summary(&self) -> anyhow::Result<String> {
         let key_tables = vec![
             "player",
@@ -852,10 +1035,10 @@ fn extract_between<'a>(haystack: &'a str, prefix: &str, suffix: &str) -> Option<
     Some(&remaining[..end])
 }
 
-use std::ops::ControlFlow;
-use sqlparser::ast::{Expr, Ident, VisitMut, VisitorMut};
+use sqlparser::ast::{Expr, VisitMut, VisitorMut};
 use sqlparser::dialect::DuckDbDialect;
 use sqlparser::parser::Parser;
+use std::ops::ControlFlow;
 
 struct IdentReplacer<'a> {
     old_name: &'a str,
@@ -890,7 +1073,7 @@ fn replace_sql_ident_ast(sql: &str, old_name: &str, new_name: &str) -> Option<St
     let mut statements = Parser::parse_sql(&dialect, sql).ok()?;
     let mut replacer = IdentReplacer { old_name, new_name };
     for stmt in &mut statements {
-        stmt.visit(&mut replacer);
+        let _ = stmt.visit(&mut replacer);
     }
     Some(statements.iter().map(|s| s.to_string()).collect::<Vec<_>>().join("; "))
 }
@@ -935,8 +1118,7 @@ fn replace_sql_ident_heuristic(sql: &str, old_name: &str, new_name: &str) -> Str
         if i + old_bytes.len() <= bytes.len() && &bytes[i..i + old_bytes.len()] == old_bytes {
             let before_ok = i == 0 || !bytes[i - 1].is_ascii_alphanumeric() && bytes[i - 1] != b'_';
             let after_ok = i + old_bytes.len() >= bytes.len()
-                || !bytes[i + old_bytes.len()].is_ascii_alphanumeric()
-                    && bytes[i + old_bytes.len()] != b'_';
+                || !bytes[i + old_bytes.len()].is_ascii_alphanumeric() && bytes[i + old_bytes.len()] != b'_';
 
             if before_ok && after_ok {
                 result.push_str(new_name);

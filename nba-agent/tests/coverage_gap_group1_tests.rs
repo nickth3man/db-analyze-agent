@@ -15,6 +15,11 @@ fn test_db_history_entry_success() {
         row_count: 42,
         elapsed_ms: 12,
         success: true,
+        error_category: None,
+        cache_hit: false,
+        model: None,
+        session_id: None,
+        tool_name: None,
     };
     let json = serde_json::to_string(&entry).unwrap();
     assert!(json.contains("SELECT * FROM game"));
@@ -24,13 +29,19 @@ fn test_db_history_entry_success() {
 
 #[test]
 fn test_db_history_entry_failure() {
-    let entry = DbHistoryEntry {
-        timestamp: 1712000000,
-        sql: "BAD SQL".into(),
-        row_count: 0,
-        elapsed_ms: 5,
-        success: false,
-    };
+    let entry =
+        DbHistoryEntry {
+            timestamp: 1712000000,
+            sql: "BAD SQL".into(),
+            row_count: 0,
+            elapsed_ms: 5,
+            success: false,
+            error_category: Some("syntax_error".to_string()),
+            cache_hit: false,
+            model: None,
+            session_id: None,
+            tool_name: None,
+        };
     let json = serde_json::to_string(&entry).unwrap();
     assert!(json.contains("false"));
 }
@@ -39,16 +50,14 @@ fn test_db_history_entry_failure() {
 #[test]
 fn test_format_insights_for_prompt_successful_cards() {
     let insights = InsightsResponse {
-        cards: vec![
-            InsightCard {
-                id: "1".into(),
-                title: "Games".into(),
-                value: "50000".into(),
-                subtitle: "total rows".into(),
-                category: "volume".into(),
-                error: None,
-            },
-        ],
+        cards: vec![InsightCard {
+            id: "1".into(),
+            title: "Games".into(),
+            value: "50000".into(),
+            subtitle: "total rows".into(),
+            category: "volume".into(),
+            error: None,
+        }],
         generated_at: "2024-01-01".into(),
         total_queries: 1,
         successful: 1,
@@ -61,16 +70,14 @@ fn test_format_insights_for_prompt_successful_cards() {
 #[test]
 fn test_format_insights_for_prompt_all_fail() {
     let insights = InsightsResponse {
-        cards: vec![
-            InsightCard {
-                id: "1".into(),
-                title: "Games".into(),
-                value: "—".into(),
-                subtitle: "error".into(),
-                category: "volume".into(),
-                error: Some("failed".into()),
-            },
-        ],
+        cards: vec![InsightCard {
+            id: "1".into(),
+            title: "Games".into(),
+            value: "—".into(),
+            subtitle: "error".into(),
+            category: "volume".into(),
+            error: Some("failed".into()),
+        }],
         generated_at: "2024-01-01".into(),
         total_queries: 1,
         successful: 0,
@@ -112,11 +119,7 @@ fn test_tool_call_step_serial() {
 // ChatStep
 #[test]
 fn test_chat_step_content() {
-    let step = ChatStep {
-        content: Some("hello".into()),
-        reasoning: None,
-        tool_calls: vec![],
-    };
+    let step = ChatStep { content: Some("hello".into()), reasoning: None, tool_calls: vec![] };
     let json = serde_json::to_string(&step).unwrap();
     assert!(json.contains("hello"));
 }
@@ -142,11 +145,7 @@ fn test_chat_step_with_tool_calls() {
 
 #[test]
 fn test_chat_step_none_content() {
-    let step = ChatStep {
-        content: None,
-        reasoning: None,
-        tool_calls: vec![],
-    };
+    let step = ChatStep { content: None, reasoning: None, tool_calls: vec![] };
     let json = serde_json::to_string(&step).unwrap();
     assert!(json.contains("\"content\":null"));
 }
@@ -156,11 +155,7 @@ fn test_chat_step_none_content() {
 fn test_conversation_trace_serial() {
     let trace = ConversationTrace {
         session_id: "s1".into(),
-        steps: vec![ChatStep {
-            content: Some("hi".into()),
-            reasoning: None,
-            tool_calls: vec![],
-        }],
+        steps: vec![ChatStep { content: Some("hi".into()), reasoning: None, tool_calls: vec![] }],
         final_answer: "done".into(),
     };
     let json = serde_json::to_string(&trace).unwrap();
@@ -170,11 +165,7 @@ fn test_conversation_trace_serial() {
 
 #[test]
 fn test_conversation_trace_empty_steps() {
-    let trace = ConversationTrace {
-        session_id: "s2".into(),
-        steps: vec![],
-        final_answer: "empty".into(),
-    };
+    let trace = ConversationTrace { session_id: "s2".into(), steps: vec![], final_answer: "empty".into() };
     let json = serde_json::to_string(&trace).unwrap();
     let parsed: ConversationTrace = serde_json::from_str(&json).unwrap();
     assert_eq!(parsed.steps.len(), 0);
@@ -227,11 +218,7 @@ fn test_event_final_answer_chunk() {
 
 #[test]
 fn test_event_completed() {
-    let trace = ConversationTrace {
-        session_id: "s".into(),
-        steps: vec![],
-        final_answer: "done".into(),
-    };
+    let trace = ConversationTrace { session_id: "s".into(), steps: vec![], final_answer: "done".into() };
     let event = AgentStreamEvent::Completed { trace };
     let json = serde_json::to_string(&event).unwrap();
     assert!(json.contains("Completed"));
@@ -286,10 +273,7 @@ use nba_agent::agent::Agent;
 
 #[test]
 fn test_markdown_table_basic() {
-    let rows: Vec<serde_json::Value> = vec![
-        json!({"Name": "LeBron", "PTS": 30}),
-        json!({"Name": "KD", "PTS": 28}),
-    ];
+    let rows: Vec<serde_json::Value> = vec![json!({"Name": "LeBron", "PTS": 30}), json!({"Name": "KD", "PTS": 28})];
     let mut md = String::new();
     Agent::append_markdown_table(&mut md, &rows);
     assert!(md.contains("LeBron"));
@@ -307,9 +291,7 @@ fn test_markdown_table_empty() {
 
 #[test]
 fn test_markdown_table_null_values() {
-    let rows: Vec<serde_json::Value> = vec![
-        json!({"Name": null, "PTS": 30}),
-    ];
+    let rows: Vec<serde_json::Value> = vec![json!({"Name": null, "PTS": 30})];
     let mut md = String::new();
     Agent::append_markdown_table(&mut md, &rows);
     assert!(md.contains("—"));

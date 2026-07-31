@@ -1,0 +1,9 @@
+# Each parallel test thread opens its own DuckDB instance against the 17GB
+# warehouse (each instance's buffer is capped via DUCKDB_MEMORY_LIMIT, default
+# "2GB" in DbContext::new). Limiting the test harness to 2 threads keeps peak
+# memory bounded and prevents the machine from thrashing.
+#
+# RUST_TEST_THREADS is read only by the libtest harness, so `cargo run` / the
+# server binary are unaffected.
+[env]
+RUST_TEST_THREADS = "2"

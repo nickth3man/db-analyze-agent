@@ -1,4 +1,3 @@
-
 // ---------------------------------------------------------------------------
 // Sliding window memory tests
 // ---------------------------------------------------------------------------
@@ -93,14 +92,18 @@ fn test_trim_large_session() {
     assert_eq!(msgs.len(), 20, "Should trim to window size");
     assert_eq!(msgs[0].role, "system");
     // Last message should be from the end (user 99 or assistant 100)
-    assert!(msgs[19].content.as_ref().unwrap().as_str().unwrap().contains("100")
-         || msgs[19].content.as_ref().unwrap().as_str().unwrap().contains("99"));
+    assert!(
+        msgs[19].content.as_ref().unwrap().as_str().unwrap().contains("100")
+            || msgs[19].content.as_ref().unwrap().as_str().unwrap().contains("99")
+    );
 }
 
 #[test]
 fn test_trim_multiple_calls_idempotent() {
     let mut msgs = vec![make_system()];
-    for i in 1..=30 { msgs.push(make_user(i)); }
+    for i in 1..=30 {
+        msgs.push(make_user(i));
+    }
     Agent::trim_sliding_window(&mut msgs);
     let len_after_first = msgs.len();
     Agent::trim_sliding_window(&mut msgs);

@@ -1,5 +1,4 @@
 use nba_agent::db::DbContext;
-use serde_json::Value;
 
 fn get_test_db() -> Option<DbContext> {
     let path = std::env::var("DATABASE_PATH").unwrap_or_else(|_| "../data/nba-data.duckdb".to_string());
@@ -56,7 +55,8 @@ async fn test_run_sql_empty_result() {
         Some(d) => d,
         None => return,
     };
-    let rows = db.run_sql("SELECT * FROM game WHERE game_id = 'nonexistent_game_xyz';".to_string(), None).await.unwrap();
+    let rows =
+        db.run_sql("SELECT * FROM game WHERE game_id = 'nonexistent_game_xyz';".to_string(), None).await.unwrap();
     assert!(rows.is_empty(), "Expected empty result");
 }
 
@@ -243,10 +243,10 @@ async fn test_null_values_in_results() {
         Some(d) => d,
         None => return,
     };
-    let rows = db.run_sql(
-        "SELECT first_name, last_name, rosterstatus FROM common_player_info LIMIT 5;".to_string(),
-        Some(5),
-    ).await.unwrap();
+    let rows = db
+        .run_sql("SELECT first_name, last_name, rosterstatus FROM common_player_info LIMIT 5;".to_string(), Some(5))
+        .await
+        .unwrap();
     assert!(!rows.is_empty());
     let has_first_name = rows[0].get("first_name").map(|v| !v.is_null()).unwrap_or(false);
     assert!(has_first_name, "first_name should be non-null for first row");
@@ -350,9 +350,7 @@ async fn test_enriched_schema_sample_values() {
     let key_tables: &[&str] = &["player", "team"];
     let schema = db.build_enriched_schema(Some(key_tables)).await.unwrap();
     // Find a column with sample values (name-like columns should have samples)
-    let has_samples = schema.tables.iter().any(|t| {
-        t.columns.iter().any(|c| !c.sample_values.is_empty())
-    });
+    let has_samples = schema.tables.iter().any(|t| t.columns.iter().any(|c| !c.sample_values.is_empty()));
     assert!(has_samples, "Should have columns with sample values");
 }
 
@@ -501,7 +499,9 @@ async fn test_game_count_insight_accurate() {
     assert!(game_card.is_some(), "Should have total_games card");
     let card = game_card.unwrap();
     if card.error.is_none() {
-        let actual: i64 = db.run_sql("SELECT COUNT(*) as val FROM game;".to_string(), Some(1)).await.unwrap()[0]["val"].as_i64().unwrap();
+        let actual: i64 = db.run_sql("SELECT COUNT(*) as val FROM game;".to_string(), Some(1)).await.unwrap()[0]["val"]
+            .as_i64()
+            .unwrap();
         let card_val: i64 = card.value.replace(',', "").parse().unwrap_or(0);
         assert_eq!(card_val, actual, "Game count should match actual DB count");
     }
@@ -513,10 +513,8 @@ async fn test_game_count_insight_accurate() {
 
 #[test]
 fn test_append_markdown_table_formats_correctly() {
-    let rows: Vec<serde_json::Value> = vec![
-        serde_json::json!({"name": "Alice", "score": 42}),
-        serde_json::json!({"name": "Bob", "score": 17}),
-    ];
+    let rows: Vec<serde_json::Value> =
+        vec![serde_json::json!({"name": "Alice", "score": 42}), serde_json::json!({"name": "Bob", "score": 17})];
     let mut md = String::new();
     nba_agent::agent::Agent::append_markdown_table(&mut md, &rows);
     assert!(md.contains("| name | score |"), "Should have header row");
@@ -596,12 +594,10 @@ fn test_validate_sql_rejects_alter() {
     assert!(nba_agent::db::DbContext::validate_sql("ALTER TABLE game ADD COLUMN x INT;").is_err());
 }
 
-
 // ---------------------------------------------------------------------------
 // Concurrency and stream tests
 // ---------------------------------------------------------------------------
 
-use nba_agent::agent::Agent;
 use std::time::{Duration, Instant};
 
 /// Test that 5+ concurrent run_sql calls on a shared DbContext complete without deadlock.
@@ -675,9 +671,7 @@ async fn test_describe_table_refs_still_work_after_refactor() {
     // Concurrent describe_table calls should not deadlock
     let db_clone = db.clone();
     let table_name = "common_player_info".to_string();
-    let handle = tokio::spawn(async move {
-        db_clone.describe_table(table_name).await
-    });
+    let handle = tokio::spawn(async move { db_clone.describe_table(table_name).await });
 
     let info_main = db.describe_table("team".to_string()).await.unwrap();
     let info_spawned = handle.await.unwrap().unwrap();

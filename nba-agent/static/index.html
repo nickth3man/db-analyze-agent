@@ -5,31 +5,44 @@
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>NBA Analytical Data Agent</title>
-    <!-- Tailwind CSS CDN -->
     <script src="https://cdn.tailwindcss.com"></script>
-    <!-- Chart.js for interactive visualizations -->
     <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
-    <!-- Marked.js for robust Markdown rendering -->
     <script src="https://cdn.jsdelivr.net/npm/marked/marked.min.js"></script>
     <style>
+        :root {
+            --bg-body: #0d1117;
+            --bg-panel: #161b22;
+            --bg-input: #0d1117;
+            --border: #30363d;
+            --primary: #1f6feb;
+            --primary-hover: #388bfd;
+            --text: #c9d1d9;
+            --text-dim: #8b949e;
+            --blue-accent: #58a6ff;
+            --green-accent: #3fb950;
+            --amber-accent: #d29922;
+            --red-accent: #f85149;
+            --purple-accent: #a371f7;
+        }
+
         body {
-            background-color: #0d1117;
-            color: #c9d1d9;
+            background-color: var(--bg-body);
+            color: var(--text);
         }
 
         .bg-agent {
-            background-color: #161b22;
-            border: 1px solid #30363d;
+            background-color: var(--bg-panel);
+            border: 1px solid var(--border);
         }
 
         .bg-user {
-            background-color: #1f6feb;
+            background-color: var(--primary);
             color: #ffffff;
         }
 
         .tool-block {
-            background-color: #0d1117;
-            border: 1px solid #30363d;
+            background-color: var(--bg-body);
+            border: 1px solid var(--border);
             border-radius: 0.5rem;
         }
 
@@ -56,19 +69,275 @@
 
         .prose th,
         .prose td {
-            border: 1px solid #30363d;
+            border: 1px solid var(--border);
             padding: 0.5rem;
             text-align: left;
         }
 
         .prose th {
-            background-color: #161b22;
+            background-color: var(--bg-panel);
+            color: var(--blue-accent);
+        }
+
+        /* Badges */
+        .badge {
+            display: inline-flex;
+            align-items: center;
+            gap: 0.25rem;
+            padding: 0.125rem 0.5rem;
+            border-radius: 9999px;
+            font-size: 0.65rem;
+            font-weight: 600;
+            line-height: 1.4;
+            white-space: nowrap;
+        }
+
+        .badge-green {
+            background: rgba(63, 185, 80, 0.15);
+            color: #3fb950;
+            border: 1px solid rgba(63, 185, 80, 0.3);
+        }
+
+        .badge-yellow {
+            background: rgba(210, 153, 34, 0.15);
+            color: #d29922;
+            border: 1px solid rgba(210, 153, 34, 0.3);
+        }
+
+        .badge-red {
+            background: rgba(248, 81, 73, 0.15);
+            color: #f85149;
+            border: 1px solid rgba(248, 81, 73, 0.3);
+        }
+
+        .badge-blue {
+            background: rgba(31, 111, 235, 0.15);
             color: #58a6ff;
+            border: 1px solid rgba(31, 111, 235, 0.3);
+        }
+
+        .badge-gray {
+            background: rgba(139, 148, 158, 0.15);
+            color: #8b949e;
+            border: 1px solid rgba(139, 148, 158, 0.3);
+        }
+
+        .badge-purple {
+            background: rgba(163, 113, 247, 0.15);
+            color: #a371f7;
+            border: 1px solid rgba(163, 113, 247, 0.3);
+        }
+
+        /* Sidebar base */
+        .sidebar {
+            position: fixed;
+            right: 0;
+            top: 0;
+            height: 100%;
+            width: 20rem;
+            background: var(--bg-panel);
+            border-left: 1px solid var(--border);
+            box-shadow: 0 4px 12px rgba(0, 0, 0, 0.3);
+            transform: translateX(100%);
+            transition: transform 0.2s ease;
+            z-index: 50;
+            overflow-y: auto;
+            display: none;
+        }
+
+        .sidebar.open {
+            transform: translateX(0);
+        }
+
+        /* Interactive table */
+        .interactive-table {
+            width: 100%;
+            border-collapse: collapse;
+            font-size: 0.75rem;
+        }
+
+        .interactive-table thead {
+            position: sticky;
+            top: 0;
+            z-index: 1;
+        }
+
+        .interactive-table th {
+            background: #21262d;
+            color: var(--blue-accent);
+            border-bottom: 1px solid var(--border);
+            padding: 0.5rem 0.75rem;
+            text-align: left;
+            cursor: pointer;
+            user-select: none;
+            white-space: nowrap;
+        }
+
+        .interactive-table th:hover {
+            background: #30363d;
+        }
+
+        .interactive-table th .sort-arrow {
+            margin-left: 0.25rem;
+            opacity: 0.4;
+        }
+
+        .interactive-table th.sorted .sort-arrow {
+            opacity: 1;
+            color: var(--primary);
+        }
+
+        .interactive-table td {
+            padding: 0.375rem 0.75rem;
+            border-bottom: 1px solid #21262d;
+            max-width: 16rem;
+            overflow: hidden;
+            text-overflow: ellipsis;
+            white-space: nowrap;
+        }
+
+        .interactive-table tbody tr:hover {
+            background: #1a1f2b;
+        }
+
+        /* Pagination */
+        .pagination-btn {
+            padding: 0.25rem 0.5rem;
+            font-size: 0.7rem;
+            border: 1px solid var(--border);
+            background: #21262d;
+            color: var(--text-dim);
+            border-radius: 0.25rem;
+            cursor: pointer;
+            transition: background 0.15s;
+        }
+
+        .pagination-btn:hover {
+            background: #30363d;
+        }
+
+        .pagination-btn.active {
+            background: var(--primary);
+            color: white;
+            border-color: var(--primary);
+        }
+
+        .pagination-btn:disabled {
+            opacity: 0.4;
+            cursor: default;
+        }
+
+        /* Comparison cards */
+        .comparison-card {
+            background: var(--bg-panel);
+            border: 1px solid var(--border);
+            border-radius: 0.5rem;
+            overflow: hidden;
+        }
+
+        .comparison-bar {
+            height: 0.5rem;
+            border-radius: 0.25rem;
+            transition: width 0.3s ease;
+        }
+
+        .winner-glow {
+            box-shadow: 0 0 8px rgba(31, 111, 235, 0.5);
+        }
+
+        /* Action chips */
+        .action-chip {
+            display: inline-flex;
+            align-items: center;
+            gap: 0.375rem;
+            padding: 0.25rem 0.75rem;
+            border-radius: 9999px;
+            font-size: 0.7rem;
+            font-weight: 500;
+            cursor: pointer;
+            transition: all 0.15s;
+            border: 1px solid var(--border);
+            background: #21262d;
+            color: var(--text-dim);
+        }
+
+        .action-chip:hover {
+            background: #30363d;
+            color: var(--primary-hover);
+            border-color: var(--primary);
+        }
+
+        /* SQL syntax highlighting */
+        .sql-kw {
+            color: #ff7b72;
+        }
+
+        .sql-fn {
+            color: #d2a8ff;
+        }
+
+        .sql-str {
+            color: #a5d6ff;
+        }
+
+        .sql-num {
+            color: #79c0ff;
+        }
+
+        .sql-tbl {
+            color: #7ee787;
+        }
+
+        /* Pinned items */
+        .pinned-item {
+            background: #0d1117;
+            border: 1px solid var(--border);
+            border-radius: 0.375rem;
+            padding: 0.5rem;
+            margin-bottom: 0.375rem;
+        }
+
+        .pinned-item.dragging {
+            opacity: 0.5;
+        }
+
+        /* Template bar */
+        .template-pill {
+            padding: 0.25rem 0.75rem;
+            border-radius: 9999px;
+            font-size: 0.7rem;
+            border: 1px solid var(--border);
+            background: #21262d;
+            color: var(--text-dim);
+            cursor: pointer;
+            white-space: nowrap;
+            transition: all 0.15s;
+        }
+
+        .template-pill:hover {
+            background: #1f6feb;
+            color: white;
+            border-color: var(--primary);
+        }
+
+        /* Scrollbar styling */
+        ::-webkit-scrollbar {
+            width: 6px;
+        }
+
+        ::-webkit-scrollbar-track {
+            background: var(--bg-body);
+        }
+
+        ::-webkit-scrollbar-thumb {
+            background: var(--border);
+            border-radius: 3px;
         }
     </style>
 </head>
 
 <body class="flex flex-col h-screen font-sans">
+    <!-- ===== HEADER ===== -->
     <header class="p-4 border-b border-[#30363d] flex justify-between items-center bg-[#161b22] shadow-md">
         <div class="flex items-center gap-3">
             <div class="w-8 h-8 rounded-full bg-blue-600 flex items-center justify-center font-bold text-white text-sm">
@@ -78,7 +347,7 @@
                 <div class="text-xs text-gray-400">DuckDB Warehouse (588 Tables) • OpenRouter `qwen/qwen3.7-flash`</div>
             </div>
         </div>
-        <div class="flex items-center gap-3">
+        <div class="flex items-center gap-2 flex-wrap">
             <span id="session-badge"
                 class="text-xs bg-[#21262d] border border-[#30363d] px-3 py-1 rounded-full font-mono text-gray-400">
                 Session: <span id="session-id-display">active</span>
@@ -87,30 +356,52 @@
                 class="bg-[#21262d] hover:bg-[#30363d] text-gray-300 text-xs px-3 py-1.5 rounded-md border border-[#30363d] transition-colors flex items-center gap-1.5">
                 <svg class="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                     <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 4v16m8-8H4"></path>
-                </svg>
-                New Chat
+                </svg> New
             </button>
             <button id="btn-export" title="Export session as Markdown"
                 class="bg-[#21262d] hover:bg-[#30363d] text-gray-300 text-xs px-3 py-1.5 rounded-md border border-[#30363d] transition-colors flex items-center gap-1.5">
                 <svg class="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                     <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2"
                         d="M4 16v1a3 3 0 003 3h10a3 3 0 003-3v-1m-4-4l-4 4m0 0l-4-4m4 4V4"></path>
-                </svg>
-                Export
+                </svg> Export
             </button>
             <button id="btn-history" title="Query history"
                 class="bg-[#21262d] hover:bg-[#30363d] text-gray-300 text-xs px-3 py-1.5 rounded-md border border-[#30363d] transition-colors flex items-center gap-1.5">
                 <svg class="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                     <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2"
                         d="M12 8v4l3 3m6-3a9 9 0 11-18 0 9 9 0 0118 0z"></path>
-                </svg>
-                History
+                </svg> History
+            </button>
+            <button id="btn-schema" title="Schema explorer"
+                class="bg-[#21262d] hover:bg-[#30363d] text-gray-300 text-xs px-3 py-1.5 rounded-md border border-[#30363d] transition-colors flex items-center gap-1.5">
+                <svg class="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                    <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2"
+                        d="M4 7v10c0 2 1 3 3 3h10c2 0 3-1 3-3V7c0-2-1-3-3-3H7C5 5 4 6 4 7z"></path>
+                    <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M16 3v4M8 3v4M4 11h16">
+                    </path>
+                </svg> Schema
+            </button>
+            <button id="btn-saved" title="Saved analyses"
+                class="bg-[#21262d] hover:bg-[#30363d] text-gray-300 text-xs px-3 py-1.5 rounded-md border border-[#30363d] transition-colors flex items-center gap-1.5">
+                <svg class="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                    <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2"
+                        d="M5 5a2 2 0 012-2h10a2 2 0 012 2v16l-7-3.5L5 21V5z"></path>
+                </svg> Saved
+            </button>
+            <button id="btn-report" title="Report builder"
+                class="bg-[#21262d] hover:bg-[#30363d] text-gray-300 text-xs px-3 py-1.5 rounded-md border border-[#30363d] transition-colors flex items-center gap-1.5">
+                <svg class="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                    <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2"
+                        d="M9 12h6m-6 4h6m2 5H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z">
+                    </path>
+                </svg> Report
             </button>
         </div>
     </header>
 
+    <!-- ===== MAIN CHAT AREA ===== -->
     <main class="flex-1 overflow-y-auto p-4 md:p-6 space-y-6 flex flex-col" id="chat-container">
-        <div class="flex flex-col self-start w-full max-w-4xl mx-auto space-y-4">
+        <div class="flex flex-col self-start w-full max-w-4xl mx-auto space-y-4" id="chat-messages">
             <div class="p-5 rounded-2xl bg-agent self-start max-w-3xl shadow-md border border-[#30363d]">
                 <div class="font-semibold text-white mb-2">Welcome to the NBA Data Intelligence Agent! 🏀📊</div>
                 <div class="text-sm text-gray-300 leading-relaxed space-y-2">
@@ -125,7 +416,6 @@
                 </div>
             </div>
         </div>
-        <!-- Automated Insight Cards -->
         <div id="insights-panel" class="max-w-4xl mx-auto w-full">
             <div class="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-5 gap-3" id="insights-grid">
                 <div class="col-span-full text-xs text-gray-500 text-center py-2">Loading database insights...</div>
@@ -133,8 +423,28 @@
         </div>
     </main>
 
-    <footer class="p-4 bg-[#161b22] border-t border-[#30363d]">
-        <form id="chat-form" class="max-w-4xl mx-auto flex gap-2">
+    <!-- ===== FOOTER ===== -->
+    <footer class="bg-[#161b22] border-t border-[#30363d]">
+        <!-- Analysis Templates Bar -->
+        <div class="max-w-4xl mx-auto px-4 pt-2">
+            <div class="flex items-center gap-1.5 overflow-x-auto pb-1.5" id="template-bar">
+                <span class="text-xs text-gray-500 mr-1 whitespace-nowrap">Quick:</span>
+                <button class="template-pill" data-template="Show me career highs for a random active player">⭐ Career
+                    Highs</button>
+                <button class="template-pill" data-template="Compare the top 2 scorers this season">⚔️ Head to
+                    Head</button>
+                <button class="template-pill" data-template="Find the longest scoring streaks this season">🔥 Streak
+                    Finder</button>
+                <button class="template-pill" data-template="Compare the top 2 teams in the standings">📊 Team
+                    Comparison</button>
+                <button class="template-pill" data-template="Show draft class performance for 2023">🎯 Draft
+                    Class</button>
+                <button class="template-pill" data-template="Show current playoff bracket and standings">🏆 Playoff
+                    Picture</button>
+            </div>
+        </div>
+        <!-- Chat Input -->
+        <form id="chat-form" class="max-w-4xl mx-auto flex gap-2 p-4 pt-1">
             <input type="text" id="message-input" required placeholder="Ask any NBA statistical question..."
                 class="flex-1 bg-[#0d1117] border border-[#30363d] rounded-lg px-4 py-3 focus:outline-none focus:border-blue-500 text-white shadow-sm placeholder-gray-500 text-sm md:text-base"
                 autocomplete="off" />
@@ -152,10 +462,8 @@
         </form>
     </footer>
 
-    <!-- Query History Sidebar -->
-    <div id="history-sidebar"
-        class="fixed right-0 top-0 h-full w-80 bg-[#161b22] border-l border-[#30363d] shadow-xl transform translate-x-full transition-transform duration-200 z-50 overflow-y-auto"
-        style="display:none">
+    <!-- ===== QUERY HISTORY SIDEBAR ===== -->
+    <div id="history-sidebar" class="sidebar">
         <div class="p-4 border-b border-[#30363d] flex justify-between items-center sticky top-0 bg-[#161b22]">
             <h3 class="text-sm font-bold text-white">Query History</h3>
             <button id="btn-close-history" class="text-gray-400 hover:text-white text-lg">&times;</button>
@@ -165,250 +473,650 @@
         </div>
     </div>
 
+    <!-- ===== SCHEMA EXPLORER SIDEBAR ===== -->
+    <div id="schema-sidebar" class="sidebar">
+        <div class="p-4 border-b border-[#30363d] flex justify-between items-center sticky top-0 bg-[#161b22]">
+            <h3 class="text-sm font-bold text-white">Schema Explorer</h3>
+            <button id="btn-close-schema" class="text-gray-400 hover:text-white text-lg">&times;</button>
+        </div>
+        <div class="p-3 space-y-3">
+            <div class="text-xs text-gray-400">
+                <span id="schema-table-count">--</span> tables known • <span id="schema-refresh-time">--</span>
+            </div>
+            <input type="text" id="schema-search" placeholder="Search tables..."
+                class="w-full bg-[#0d1117] border border-[#30363d] rounded px-3 py-1.5 text-xs text-white focus:outline-none focus:border-blue-500" />
+            <div id="schema-list" class="space-y-1 max-h-[70vh] overflow-y-auto">
+                <div class="text-xs text-gray-500 text-center py-4">Ask a question to discover tables</div>
+            </div>
+        </div>
+    </div>
+
+    <!-- ===== SAVED ANALYSES SIDEBAR ===== -->
+    <div id="saved-sidebar" class="sidebar">
+        <div class="p-4 border-b border-[#30363d] flex justify-between items-center sticky top-0 bg-[#161b22]">
+            <h3 class="text-sm font-bold text-white">Saved Analyses</h3>
+            <button id="btn-close-saved" class="text-gray-400 hover:text-white text-lg">&times;</button>
+        </div>
+        <div class="p-3 space-y-3">
+            <button id="btn-save-current"
+                class="w-full text-xs bg-[#1f6feb] hover:bg-[#388bfd] text-white px-3 py-1.5 rounded-md transition-colors">
+                💾 Save Current Analysis
+            </button>
+            <div id="saved-list" class="space-y-2 max-h-[70vh] overflow-y-auto">
+                <div class="text-xs text-gray-500 text-center py-4">No saved analyses yet</div>
+            </div>
+        </div>
+    </div>
+
+    <!-- ===== REPORT BUILDER SIDEBAR ===== -->
+    <div id="report-sidebar" class="sidebar">
+        <div class="p-4 border-b border-[#30363d] flex justify-between items-center sticky top-0 bg-[#161b22]">
+            <h3 class="text-sm font-bold text-white">Report Builder</h3>
+            <button id="btn-close-report" class="text-gray-400 hover:text-white text-lg">&times;</button>
+        </div>
+        <div class="p-3 space-y-3">
+            <div class="text-xs text-gray-400"><span id="pin-count">0</span> items pinned</div>
+            <div id="pinned-list" class="space-y-2 max-h-[50vh] overflow-y-auto">
+                <div class="text-xs text-gray-500 text-center py-4">Pin tool results or answers to build a report</div>
+            </div>
+            <div class="border-t border-[#30363d] pt-3 space-y-2">
+                <button id="btn-export-md"
+                    class="w-full text-xs bg-[#21262d] hover:bg-[#30363d] text-gray-300 px-3 py-1.5 rounded-md border border-[#30363d] transition-colors">
+                    📄 Export as Markdown
+                </button>
+                <button id="btn-export-html"
+                    class="w-full text-xs bg-[#21262d] hover:bg-[#30363d] text-gray-300 px-3 py-1.5 rounded-md border border-[#30363d] transition-colors">
+                    🌐 Export as HTML
+                </button>
+                <button id="btn-clear-pins"
+                    class="w-full text-xs bg-[#21262d] hover:bg-[#30363d] text-red-400 px-3 py-1.5 rounded-md border border-[#30363d] transition-colors">
+                    🗑 Clear All Pins
+                </button>
+            </div>
+        </div>
+    </div>
+
+    <!-- ===== SCRIPTS ===== -->
     <script>
+        // ──────────────────────────────────────────────────────
+        // SECTION 0: GLOBAL STATE
+        // ──────────────────────────────────────────────────────
         let currentSessionId = localStorage.getItem('nba_agent_session') || crypto.randomUUID();
         localStorage.setItem('nba_agent_session', currentSessionId);
         document.getElementById('session-id-display').textContent = currentSessionId.substring(0, 8);
 
-        // Load insight cards
-        async function loadInsights() {
-            const grid = document.getElementById('insights-grid');
-            try {
-                const res = await fetch('/api/insights');
-                const data = await res.json();
-                grid.innerHTML = '';
-                const categoryColors = {
-                    stats: 'border-blue-700/50 bg-blue-900/20',
-                    leader: 'border-amber-700/50 bg-amber-900/20',
-                    range: 'border-emerald-700/50 bg-emerald-900/20',
-                    meta: 'border-purple-700/50 bg-purple-900/20',
-                };
-                for (const card of data.cards) {
-                    const colorClass = categoryColors[card.category] || 'border-gray-700 bg-gray-900/20';
-                    const div = document.createElement('div');
-                    div.className = `p-3 rounded-lg border ${colorClass} text-center`;
-                    div.innerHTML = `
-                        <div class="text-2xl font-bold text-white truncate">${escapeHtml(card.value)}</div>
-                        <div class="text-xs text-gray-400 mt-1">${escapeHtml(card.title)}</div>
-                        <div class="text-xs text-gray-600 mt-0.5">${escapeHtml(card.subtitle)}</div>
-                    `;
-                    grid.appendChild(div);
-                }
-            } catch (e) {
-                grid.innerHTML = '<div class="col-span-full text-xs text-red-400 text-center py-2">Insights unavailable</div>';
-            }
-        }
-        loadInsights();
+        // Cached table names for schema explorer
+        let knownTables = [];
+        // Pinned items for report builder
+        let pinnedItems = JSON.parse(localStorage.getItem('nba_pinned_items') || '[]');
+        // Current trace for save/export
+        let currentTrace = null;
+        // Active Chart.js instances
+        let activeCharts = [];
 
-        const form = document.getElementById('chat-form');
-        const input = document.getElementById('message-input');
-        const container = document.getElementById('chat-container').querySelector('.max-w-4xl');
-        const btnText = document.getElementById('btn-text');
-        const btnLoader = document.getElementById('btn-loader');
-        const btnNewChat = document.getElementById('btn-new-chat');
-
-        btnNewChat.addEventListener('click', async () => {
-            if (confirm('Start a new session and clear conversation history?')) {
-                await fetch('/api/reset', {
-                    method: 'POST',
-                    headers: {'Content-Type': 'application/json'},
-                    body: JSON.stringify({session_id: currentSessionId})
-                });
-                currentSessionId = crypto.randomUUID();
-                localStorage.setItem('nba_agent_session', currentSessionId);
-                document.getElementById('session-id-display').textContent = currentSessionId.substring(0, 8);
-                container.innerHTML = `
-                    <div class="p-4 rounded-xl bg-agent self-start max-w-3xl border border-[#30363d] text-sm text-gray-300">
-                        New session started! What would you like to explore next?
-                    </div>
-                `;
-            }
-        });
-
-
-        // Export session as Markdown
-        document.getElementById('btn-export').addEventListener('click', () => {
-            window.open('/api/export?session=' + encodeURIComponent(currentSessionId), '_blank');
-        });
-        function addUserMessage(text) {
-            const wrapper = document.createElement('div');
-            wrapper.className = 'flex justify-end w-full';
-            const bubble = document.createElement('div');
-            bubble.className = 'p-3.5 px-5 rounded-2xl bg-user self-end max-w-2xl shadow-sm text-sm md:text-base leading-relaxed';
-            bubble.textContent = text;
-            wrapper.appendChild(bubble);
-            container.appendChild(wrapper);
-            scrollToBottom();
-        }
-
+        // ──────────────────────────────────────────────────────
+        // SECTION 1: UTILITY FUNCTIONS
+        // ──────────────────────────────────────────────────────
         function escapeHtml(str) {
             const d = document.createElement('div');
             d.textContent = str;
             return d.innerHTML;
         }
 
+        function formatNumber(n) {
+            if (n == null) return '0';
+            if (n >= 1e6) return (n / 1e6).toFixed(1) + 'M';
+            if (n >= 1e3) return (n / 1e3).toFixed(1) + 'K';
+            return String(n);
+        }
 
         function rowsToCsv(rows) {
-            if (rows.length === 0) return '';
+            if (!rows || rows.length === 0) return '';
             const keys = Object.keys(rows[0]);
-            const escapeCsv = (v) => {
+            const esc = (v) => {
                 if (v === null || v === undefined) return '';
                 const s = typeof v === 'object' ? JSON.stringify(v) : String(v);
-                if (s.includes(',') || s.includes('"') || s.includes('\n')) {
-                    return '"' + s.replace(/"/g, '""') + '"';
-                }
-                return s;
+                return s.includes(',') || s.includes('"') || s.includes('\n') ? '"' + s.replace(/"/g, '""') + '"' : s;
             };
-            const header = keys.map(escapeCsv).join(',');
-            const body = rows.map(r => keys.map(k => escapeCsv(r[k])).join(',')).join('\n');
-            return header + '\n' + body;
+            return keys.map(esc).join(',') + '\n' + rows.map(r => keys.map(k => esc(r[k])).join(',')).join('\n');
         }
-        function renderResultAsTable(rows) {
-            if (rows.length === 0) return '<div class="text-gray-500 italic p-2">No rows returned.</div>';
+
+        function downloadFile(content, filename, mime) {
+            const blob = new Blob([content], {type: mime});
+            const url = URL.createObjectURL(blob);
+            const a = document.createElement('a');
+            a.href = url;
+            a.download = filename;
+            a.click();
+            URL.revokeObjectURL(url);
+        }
+
+        function extractTablesFromSQL(sql) {
+            const tables = new Set();
+            const fromRegex = /FROM\s+([`"\[]?\w+[`"\]]?(?:\s*,\s*[`"\[]?\w+[`"\]]?)*)/gi;
+            const joinRegex = /JOIN\s+([`"\[]?\w+[`"\]]?)/gi;
+            let m;
+            while ((m = fromRegex.exec(sql)) !== null) {
+                m[1].split(',').forEach(t => tables.add(t.trim().replace(/[`"\[\]]/g, '')));
+            }
+            while ((m = joinRegex.exec(sql)) !== null) {
+                tables.add(m[1].trim().replace(/[`"\[\]]/g, ''));
+            }
+            return Array.from(tables).filter(t => !/^(SELECT|WHERE|ON|AND|OR|GROUP|ORDER|HAVING|LIMIT|UNION)$/i.test(t));
+        }
+
+        function highlightSQL(sql) {
+            return escapeHtml(sql)
+                .replace(/\b(SELECT|FROM|WHERE|JOIN|LEFT|RIGHT|INNER|OUTER|CROSS|ON|AND|OR|GROUP\s+BY|ORDER\s+BY|HAVING|LIMIT|OFFSET|UNION|ALL|DISTINCT|AS|IN|NOT|NULL|IS|LIKE|BETWEEN|EXISTS|CASE|WHEN|THEN|ELSE|END|WITH|OVER|PARTITION\s+BY|INSERT|UPDATE|DELETE|CREATE|ALTER|DROP|TABLE|INDEX|VIEW|SET|INTO|VALUES)\b/gi,
+                    '<span class="sql-kw">$1</span>')
+                .replace(/\b(COUNT|SUM|AVG|MIN|MAX|COALESCE|CAST|CONCAT|SUBSTR|UPPER|LOWER|TRIM|LENGTH|REPLACE|ROUND|ABS|CEIL|FLOOR|DATE_TRUNC|DATE_PART|EXTRACT|ROW_NUMBER|RANK|DENSE_RANK|LAG|LEAD|FIRST_VALUE|LAST_VALUE|NTILE|LIST|ARRAY_AGG|STRING_AGG|REGEXP_MATCHES)\b\s*\(/gi,
+                    '<span class="sql-fn">$1</span>(')
+                .replace(/'[^']*'/g, '<span class="sql-str">$&</span>')
+                .replace(/\b(\d+(?:\.\d+)?)\b/g, '<span class="sql-num">$1</span>');
+        }
+
+        function tryParseJSON(str) {
+            try {return JSON.parse(str);} catch (_) {return null;}
+        }
+
+        function isTableLike(data) {
+            return Array.isArray(data) && data.length > 0 && typeof data[0] === 'object' && data[0] !== null;
+        }
+
+        function scrollToBottom() {
+            const main = document.getElementById('chat-container');
+            main.scrollTop = main.scrollHeight;
+        }
+
+        // ──────────────────────────────────────────────────────
+        // SECTION 2: INTERACTIVE TABLE COMPONENT
+        // ──────────────────────────────────────────────────────
+        function createInteractiveTable(rows, containerId) {
+            if (!rows || rows.length === 0) return '<div class="text-gray-500 italic p-2">No rows returned.</div>';
             if (typeof rows[0] !== 'object' || rows[0] === null) {
                 return '<pre class="text-gray-400 max-h-60 overflow-y-auto p-2 bg-[#161b22] rounded border border-[#30363d]">' + escapeHtml(JSON.stringify(rows, null, 2)) + '</pre>';
             }
+
+            const id = containerId || 'itbl-' + Math.random().toString(36).slice(2, 8);
             const keys = Object.keys(rows[0]);
             if (keys.length === 0) return '<div class="text-gray-500 italic p-2">Empty objects returned.</div>';
 
-            let html = '<div class="overflow-auto max-h-96 border border-[#30363d] rounded"><table class="w-full text-left text-xs border-collapse">';
-            html += '<thead><tr class="bg-[#21262d] sticky top-0">';
+            // Store data globally for interactivity
+            window['__tbl_' + id] = {rows, keys, sortCol: null, sortDir: 'asc', page: 1, perPage: 25, filter: '', visibleCols: new Set(keys)};
+
+            return buildInteractiveTableHTML(id, rows, keys);
+        }
+
+        function buildInteractiveTableHTML(id, rows, keys) {
+            const state = window['__tbl_' + id];
+            if (!state) return '';
+            const {sortCol, sortDir, page, perPage, filter, visibleCols} = state;
+
+            // Filter
+            let filtered = rows;
+            if (filter.trim()) {
+                const q = filter.toLowerCase();
+                filtered = rows.filter(r => keys.some(k => String(r[k] || '').toLowerCase().includes(q)));
+            }
+
+            // Sort
+            const sorted = [...filtered];
+            if (sortCol !== null) {
+                const k = keys[sortCol];
+                sorted.sort((a, b) => {
+                    const va = a[k], vb = b[k];
+                    if (va === vb) return 0;
+                    if (va == null) return 1; if (vb == null) return -1;
+                    if (typeof va === 'number' && typeof vb === 'number') return sortDir === 'asc' ? va - vb : vb - va;
+                    const cmp = String(va).localeCompare(String(vb));
+                    return sortDir === 'asc' ? cmp : -cmp;
+                });
+            }
+
+            const totalPages = Math.max(1, Math.ceil(sorted.length / perPage));
+            const clampedPage = Math.min(page, totalPages);
+            const start = (clampedPage - 1) * perPage;
+            const pageRows = sorted.slice(start, start + perPage);
+
+            let html = '<div class="interactive-table-container border border-[#30363d] rounded overflow-hidden">';
+
+            // Controls bar
+            html += '<div class="flex flex-wrap items-center gap-2 p-2 bg-[#161b22] border-b border-[#30363d]">';
+            html += '<input type="text" class="itbl-filter bg-[#0d1117] border border-[#30363d] rounded px-2 py-1 text-xs text-white w-40 focus:outline-none focus:border-blue-500" placeholder="Filter ' + sorted.length + ' rows..." data-id="' + id + '" value="' + escapeHtml(filter) + '" />';
+            html += '<span class="text-xs text-gray-500">' + sorted.length + ' rows</span>';
+            html += '<div class="flex-1"></div>';
+            // Column toggles
+            html += '<details class="relative"><summary class="text-xs text-gray-400 cursor-pointer hover:text-gray-200 px-1">Columns ▾</summary>';
+            html += '<div class="absolute right-0 top-full mt-1 bg-[#161b22] border border-[#30363d] rounded shadow-lg p-2 z-10 min-w-[180px] max-h-48 overflow-y-auto">';
             for (const k of keys) {
-                html += '<th class="px-3 py-2 font-mono text-[#58a6ff] border-b border-[#30363d] whitespace-nowrap">' + escapeHtml(k) + '</th>';
+                const checked = visibleCols.has(k) ? ' checked' : '';
+                html += '<label class="flex items-center gap-1.5 text-xs text-gray-300 py-0.5 cursor-pointer hover:text-white"><input type="checkbox" class="itbl-col-toggle" data-id="' + id + '" data-col="' + escapeHtml(k) + '"' + checked + ' /> ' + escapeHtml(k) + '</label>';
+            }
+            html += '</div></details>';
+            // Export buttons
+            html += '<button class="itbl-copy-csv text-xs px-2 py-1 bg-[#21262d] hover:bg-[#30363d] text-gray-400 border border-[#30363d] rounded transition-colors" data-id="' + id + '" title="Copy CSV">📋</button>';
+            html += '<button class="itbl-download-json text-xs px-2 py-1 bg-[#21262d] hover:bg-[#30363d] text-gray-400 border border-[#30363d] rounded transition-colors" data-id="' + id + '" title="Download JSON">⬇</button>';
+            html += '</div>';
+
+            // Table
+            html += '<div class="overflow-auto max-h-96">';
+            html += '<table class="interactive-table" id="tbl-' + id + '">';
+            html += '<thead><tr>';
+            for (let i = 0; i < keys.length; i++) {
+                if (!visibleCols.has(keys[i])) continue;
+                const sortedClass = sortCol === i ? ' sorted' : '';
+                const arrow = sortCol === i ? (sortDir === 'asc' ? ' ▲' : ' ▼') : ' ↕';
+                html += '<th class="itbl-sort' + sortedClass + '" data-id="' + id + '" data-idx="' + i + '"><span class="font-mono">' + escapeHtml(keys[i]) + '</span><span class="sort-arrow">' + arrow + '</span></th>';
             }
             html += '</tr></thead><tbody>';
-            for (const row of rows) {
-                html += '<tr class="hover:bg-[#1a1f2b] border-b border-[#21262d]">';
+            for (const row of pageRows) {
+                html += '<tr>';
                 for (const k of keys) {
+                    if (!visibleCols.has(k)) continue;
                     const val = row[k];
                     const display = val === null
                         ? '<span class="text-gray-600 italic">NULL</span>'
                         : typeof val === 'object'
                             ? '<span class="text-gray-400">' + escapeHtml(JSON.stringify(val)) + '</span>'
                             : typeof val === 'number'
-                                ? '<span class="text-[#79c0ff] font-mono text-right block">' + val + '</span>'
+                                ? '<span class="text-[#79c0ff] font-mono">' + val + '</span>'
                                 : escapeHtml(String(val));
-                    html += '<td class="px-3 py-1.5 whitespace-nowrap max-w-xs truncate">' + display + '</td>';
+                    html += '<td>' + display + '</td>';
                 }
                 html += '</tr>';
             }
             html += '</tbody></table></div>';
-            html += '<button class="csv-copy-btn mt-1 px-2 py-0.5 text-xs bg-[#21262d] hover:bg-[#30363d] text-gray-400 border border-[#30363d] rounded transition-colors" data-csv="' + escapeHtml(JSON.stringify(rowsToCsv(rows))) + '">Copy CSV</button>';
+
+            // Pagination
+            if (totalPages > 1) {
+                html += '<div class="flex items-center justify-center gap-1 p-2 bg-[#161b22] border-t border-[#30363d]">';
+                html += '<button class="pagination-btn itbl-prev" data-id="' + id + '"' + (clampedPage <= 1 ? ' disabled' : '') + '>◀</button>';
+                const pageWindow = 5;
+                let pStart = Math.max(1, clampedPage - Math.floor(pageWindow / 2));
+                let pEnd = Math.min(totalPages, pStart + pageWindow - 1);
+                if (pEnd - pStart < pageWindow - 1) pStart = Math.max(1, pEnd - pageWindow + 1);
+                for (let p = pStart; p <= pEnd; p++) {
+                    html += '<button class="pagination-btn itbl-page' + (p === clampedPage ? ' active' : '') + '" data-id="' + id + '" data-page="' + p + '">' + p + '</button>';
+                }
+                html += '<button class="pagination-btn itbl-next" data-id="' + id + '"' + (clampedPage >= totalPages ? ' disabled' : '') + '>▶</button>';
+                html += '</div>';
+            }
+
+            html += '</div>';
             return html;
         }
 
-        function tryRenderResult(resultStr) {
-            try {
-                const parsed = JSON.parse(resultStr);
-                if (Array.isArray(parsed) && parsed.length > 0 && typeof parsed[0] === 'object' && parsed[0] !== null) {
-                    return renderResultAsTable(parsed);
-                }
-            } catch (_) { }
-            return '<pre class="text-gray-400 max-h-60 overflow-y-auto p-2 bg-[#161b22] rounded border border-[#30363d]">' + escapeHtml(resultStr) + '</pre>';
+        function refreshInteractiveTable(id) {
+            const state = window['__tbl_' + id];
+            if (!state) return;
+            const container = document.querySelector('[data-itbl-id="' + id + '"]');
+            if (container) {
+                container.innerHTML = buildInteractiveTableHTML(id, state.rows, state.keys);
+            }
         }
 
+        // ──────────────────────────────────────────────────────
+        // SECTION 3: COMPARISON CARD RENDERING
+        // ──────────────────────────────────────────────────────
+        function renderComparisonCard(toolName, result) {
+            const data = tryParseJSON(result);
+            if (!data || !isTableLike(data) || data.length < 2) return null;
+
+            const keys = Object.keys(data[0]).filter(k => {
+                const vals = data.map(r => typeof r[k] === 'number' ? r[k] : null);
+                return vals.filter(v => v !== null).length >= 2;
+            });
+            if (keys.length === 0) return null;
+
+            // Determine entity labels
+            const firstStrCol = Object.keys(data[0]).find(k => typeof data[0][k] === 'string' && data[0][k].length < 50);
+            const label1 = firstStrCol ? data[0][firstStrCol] : 'Entity 1';
+            const label2 = firstStrCol ? data[1][firstStrCol] : 'Entity 2';
+
+            let wins1 = 0, wins2 = 0;
+
+            let html = '<div class="comparison-card my-3 overflow-hidden">';
+            html += '<div class="p-3 bg-[#161b22] border-b border-[#30363d] flex items-center gap-2">';
+            html += '<span class="badge badge-purple">⚔️ Compare</span>';
+            html += '<span class="text-sm font-bold text-white">' + escapeHtml(label1) + ' vs ' + escapeHtml(label2) + '</span>';
+            html += '</div>';
+            html += '<div class="grid grid-cols-2 gap-0">';
+
+            // Headers
+            html += '<div class="p-2 bg-[#21262d] text-center text-xs font-bold text-white border-b border-r border-[#30363d]">' + escapeHtml(label1) + '</div>';
+            html += '<div class="p-2 bg-[#21262d] text-center text-xs font-bold text-white border-b border-[#30363d]">' + escapeHtml(label2) + '</div>';
+
+            for (const k of keys) {
+                const v1 = Number(data[0][k]) || 0;
+                const v2 = Number(data[1][k]) || 0;
+                const maxVal = Math.max(v1, v2, 1);
+                const pct1 = (v1 / maxVal) * 100;
+                const pct2 = (v2 / maxVal) * 100;
+                const winner1 = v1 > v2;
+                const winner2 = v2 > v1;
+                if (v1 > v2) wins1++; else if (v2 > v1) wins2++;
+
+                html += '<div class="p-2 border-b border-r border-[#30363d] ' + (winner1 ? 'bg-blue-900/10' : '') + '">';
+                html += '<div class="text-xs text-gray-400 mb-1">' + escapeHtml(k) + '</div>';
+                html += '<div class="flex items-center gap-2">';
+                html += '<div class="comparison-bar bg-blue-500" style="width:' + pct1 + '%"></div>';
+                html += '<span class="text-xs font-mono font-bold ' + (winner1 ? 'text-green-400' : 'text-gray-300') + '">' + formatNumber(v1) + '</span>';
+                html += '</div></div>';
+
+                html += '<div class="p-2 border-b border-[#30363d] ' + (winner2 ? 'bg-blue-900/10' : '') + '">';
+                html += '<div class="text-xs text-gray-400 mb-1">' + escapeHtml(k) + '</div>';
+                html += '<div class="flex items-center gap-2">';
+                html += '<div class="comparison-bar bg-blue-500" style="width:' + pct2 + '%"></div>';
+                html += '<span class="text-xs font-mono font-bold ' + (winner2 ? 'text-green-400' : 'text-gray-300') + '">' + formatNumber(v2) + '</span>';
+                html += '</div></div>';
+            }
+
+            html += '</div>';
+
+            // Overall winner
+            if (wins1 !== wins2) {
+                const overallWinner = wins1 > wins2 ? label1 : label2;
+                html += '<div class="p-2 bg-[#1f6feb]/20 border-t border-[#30363d] text-center">';
+                html += '<span class="badge badge-green">🏆 ' + escapeHtml(overallWinner) + ' wins ' + Math.max(wins1, wins2) + '–' + Math.min(wins1, wins2) + '</span>';
+                html += '</div>';
+            } else {
+                html += '<div class="p-2 bg-[#21262d] border-t border-[#30363d] text-center">';
+                html += '<span class="badge badge-gray">🤝 Tie ' + wins1 + '–' + wins2 + '</span>';
+                html += '</div>';
+            }
+
+            html += '</div>';
+            return html;
+        }
+
+        // ──────────────────────────────────────────────────────
+        // SECTION 4: CHART RENDERING WITH CONTROLS
+        // ──────────────────────────────────────────────────────
+        function createEnhancedChart(tool, resultData) {
+            if (!resultData || !resultData.data_rows || resultData.data_rows.length === 0) return null;
+
+            const chartId = 'chart-' + Math.random().toString(36).slice(2, 8);
+            const keys = Object.keys(resultData.data_rows[0]);
+            if (keys.length < 2) return null;
+
+            const container = document.createElement('div');
+            container.className = 'p-3 bg-[#161b22] border-t border-[#30363d] rounded-b-lg';
+            container.innerHTML = `
+                <div class="flex flex-wrap items-center gap-2 mb-2">
+                    <span class="text-xs text-gray-400">Chart:</span>
+                    <select class="chart-axis-x bg-[#0d1117] border border-[#30363d] rounded px-1.5 py-0.5 text-xs text-white" data-chart="${chartId}" data-role="x">${keys.map((k, i) => '<option value="' + i + '"' + (i === 0 ? ' selected' : '') + '>' + escapeHtml(k) + '</option>').join('')}</select>
+                    <span class="text-xs text-gray-500">vs</span>
+                    <select class="chart-axis-y bg-[#0d1117] border border-[#30363d] rounded px-1.5 py-0.5 text-xs text-white" data-chart="${chartId}" data-role="y">${keys.map((k, i) => '<option value="' + i + '"' + (i === Math.min(1, keys.length - 1) ? ' selected' : '') + '>' + escapeHtml(k) + '</option>').join('')}</select>
+                    <select class="chart-type bg-[#0d1117] border border-[#30363d] rounded px-1.5 py-0.5 text-xs text-white" data-chart="${chartId}">
+                        <option value="bar" selected>Bar</option>
+                        <option value="line">Line</option>
+                        <option value="pie">Pie</option>
+                        <option value="scatter">Scatter</option>
+                    </select>
+                    <button class="chart-download text-xs px-2 py-0.5 bg-[#21262d] hover:bg-[#30363d] text-gray-300 border border-[#30363d] rounded transition-colors" data-chart="${chartId}">📥 PNG</button>
+                    <button class="chart-source-toggle text-xs px-2 py-0.5 bg-[#21262d] hover:bg-[#30363d] text-gray-400 border border-[#30363d] rounded transition-colors" data-chart="${chartId}">📊 Data</button>
+                </div>
+                <div class="chart-canvas-wrap relative w-full" style="max-height:320px">
+                    <canvas id="${chartId}" class="w-full"></canvas>
+                </div>
+                <div class="chart-source-data hidden mt-2" id="${chartId}-data"></div>
+            `;
+
+            // Render source data table (hidden by default)
+            const sourceDiv = container.querySelector('.chart-source-data');
+            sourceDiv.innerHTML = createInteractiveTable(resultData.data_rows, chartId + '-src');
+
+            // Schedule chart render
+            setTimeout(() => {
+                const canvas = container.querySelector('#' + chartId);
+                if (!canvas) return;
+                renderChartInstance(chartId, resultData, keys, 'bar', 0, Math.min(1, keys.length - 1));
+            }, 50);
+
+            return container;
+        }
+
+        function renderChartInstance(chartId, resultData, keys, type, xIdx, yIdx) {
+            const canvas = document.getElementById(chartId);
+            if (!canvas) return;
+
+            // Destroy previous instance
+            if (window['__chart_' + chartId]) {
+                window['__chart_' + chartId].destroy();
+            }
+
+            const labels = resultData.data_rows.map(r => String(r[keys[xIdx]] || ''));
+            let values;
+            if (type === 'scatter') {
+                values = resultData.data_rows.map(r => ({x: parseFloat(r[keys[xIdx]]) || 0, y: parseFloat(r[keys[yIdx]]) || 0}));
+            } else {
+                values = resultData.data_rows.map(r => parseFloat(r[keys[yIdx]]) || 0);
+            }
+
+            const chartConfig = {
+                type: type,
+                data: {
+                    labels: type !== 'scatter' ? labels : undefined,
+                    datasets: [{
+                        label: type !== 'scatter' ? keys[yIdx] : keys[xIdx] + ' vs ' + keys[yIdx],
+                        data: values,
+                        backgroundColor: type === 'pie'
+                            ? ['#1f6feb', '#3fb950', '#d29922', '#f85149', '#a371f7', '#58a6ff', '#7ee787', '#ffa657', '#f778ba', '#db6d28']
+                            : 'rgba(31, 111, 235, 0.6)',
+                        borderColor: 'rgba(56, 139, 253, 1)',
+                        borderWidth: 1.5,
+                        pointRadius: type === 'scatter' ? 4 : undefined,
+                    }]
+                },
+                options: {
+                    responsive: true,
+                    maintainAspectRatio: true,
+                    plugins: {
+                        legend: {labels: {color: '#c9d1d9'}},
+                        title: {display: true, text: resultData.title || '', color: '#ffffff'},
+                        tooltip: {enabled: true}
+                    },
+                    scales: type !== 'pie' ? {
+                        x: {ticks: {color: '#8b949e', maxRotation: 45}, grid: {color: '#30363d'}},
+                        y: {ticks: {color: '#8b949e'}, grid: {color: '#30363d'}}
+                    } : {}
+                }
+            };
+
+            window['__chart_' + chartId] = new Chart(canvas, chartConfig);
+            activeCharts.push(window['__chart_' + chartId]);
+        }
+
+        // ──────────────────────────────────────────────────────
+        // SECTION 5: ACTION CHIP CATEGORIZATION
+        // ──────────────────────────────────────────────────────
+        function categorizeSuggestion(suggestion, hasTabularData) {
+            const s = suggestion.toLowerCase();
+            if (s.includes('chart') || s.includes('graph') || s.includes('plot') || s.includes('visualize')) {
+                return {icon: '📊', label: 'Chart this', color: 'text-purple-400 border-purple-700/30 hover:border-purple-500'};
+            }
+            if (s.includes('compare') || s.includes('vs') || s.includes('versus') || s.includes('head to head')) {
+                return {icon: '📈', label: 'Compare', color: 'text-amber-400 border-amber-700/30 hover:border-amber-500'};
+            }
+            if (s.includes('drill') || s.includes('detail') || s.includes('deep') || s.includes('break down') || s.includes('explore')) {
+                return {icon: '🔍', label: 'Drill down', color: 'text-blue-400 border-blue-700/30 hover:border-blue-500'};
+            }
+            if (s.includes('export') || s.includes('download') || s.includes('save') || s.includes('csv') || s.includes('json')) {
+                return {icon: '📋', label: 'Export', color: 'text-green-400 border-green-700/30 hover:border-green-500'};
+            }
+            return {icon: '💡', label: 'Try this', color: 'text-gray-400 border-gray-600 hover:border-gray-400'};
+        }
+
+        // ──────────────────────────────────────────────────────
+        // SECTION 6: TOOL BLOCK RENDERING
+        // ──────────────────────────────────────────────────────
         function createToolCallBlock(tool) {
             const block = document.createElement('div');
             block.className = 'tool-block my-3 overflow-hidden text-sm border border-[#30363d]';
 
             const getToolBadgeColor = (name) => {
-                switch (name) {
-                    case 'run_sql': return 'bg-blue-900/40 text-blue-400 border-blue-700/50';
-                    case 'search_tables': return 'bg-purple-900/40 text-purple-400 border-purple-700/50';
-                    case 'describe_table': return 'bg-emerald-900/40 text-emerald-400 border-emerald-700/50';
-                    case 'explain_query': return 'bg-amber-900/40 text-amber-400 border-amber-700/50';
-                    case 'generate_chart': return 'bg-pink-900/40 text-pink-400 border-pink-700/50';
-                    default: return 'bg-gray-800 text-gray-300 border-gray-700';
-                }
+                const map = {
+                    run_sql: 'bg-blue-900/40 text-blue-400 border-blue-700/50',
+                    search_tables: 'bg-purple-900/40 text-purple-400 border-purple-700/50',
+                    describe_table: 'bg-emerald-900/40 text-emerald-400 border-emerald-700/50',
+                    explain_query: 'bg-amber-900/40 text-amber-400 border-amber-700/50',
+                    generate_chart: 'bg-pink-900/40 text-pink-400 border-pink-700/50',
+                    compare_players: 'bg-indigo-900/40 text-indigo-400 border-indigo-700/50',
+                    compare_teams: 'bg-cyan-900/40 text-cyan-400 border-cyan-700/50',
+                    find_streaks: 'bg-orange-900/40 text-orange-400 border-orange-700/50',
+                    get_player_profile: 'bg-teal-900/40 text-teal-400 border-teal-700/50',
+                    rank_performance: 'bg-rose-900/40 text-rose-400 border-rose-700/50',
+                    list_tables: 'bg-lime-900/40 text-lime-400 border-lime-700/50',
+                };
+                return map[name] || 'bg-gray-800 text-gray-300 border-gray-700';
             };
 
+            // ── Badge bar ──
+            let badgeHtml = '<div class="flex flex-wrap items-center gap-1.5 px-3 py-1.5 bg-[#161b22] border-b border-[#30363d]">';
+            badgeHtml += '<span class="px-2 py-0.5 rounded text-xs font-mono border ' + getToolBadgeColor(tool.tool_name) + '">' + escapeHtml(tool.tool_name) + '</span>';
+            // Row count badge
+            if (tool.row_count != null) {
+                badgeHtml += '<span class="badge badge-blue">📊 ' + formatNumber(tool.row_count) + ' rows</span>';
+            }
+            // Execution time badge
+            if (tool.elapsed_ms != null) {
+                const ms = tool.elapsed_ms;
+                const timeStr = ms < 1000 ? ms + 'ms' : (ms / 1000).toFixed(1) + 's';
+                badgeHtml += '<span class="badge badge-gray">⏱ ' + timeStr + '</span>';
+            }
+            // Success/error/cache badges
+            const resultData = tryParseJSON(tool.result);
+            if (resultData !== null && !Array.isArray(resultData)) {
+                if (resultData.error) {
+                    badgeHtml += '<span class="badge badge-red">❌ ' + escapeHtml(resultData.error_category || 'Error') + '</span>';
+                }
+            }
+            // Pin button
+            badgeHtml += '<div class="flex-1"></div>';
+            badgeHtml += '<button class="pin-btn text-xs text-gray-600 hover:text-amber-400 px-1 transition-colors" data-pin-type="tool" title="Pin to report">📌</button>';
+            badgeHtml += '</div>';
+            const badgeBar = document.createElement('div');
+            badgeBar.innerHTML = badgeHtml;
+            block.appendChild(badgeBar.firstElementChild);
+
+            // ── Reasoning (collapsible) ──
             const reasoningDetails = document.createElement('details');
             reasoningDetails.open = true;
             reasoningDetails.className = 'border-b border-[#30363d]';
             reasoningDetails.innerHTML = `
                 <summary class="p-3 bg-[#161b22] hover:bg-[#21262d] flex items-center justify-between font-medium text-gray-300">
                     <div class="flex items-center gap-2">
-                        <span class="px-2 py-0.5 rounded text-xs font-mono border ${getToolBadgeColor(tool.tool_name)}">${tool.tool_name}</span>
+                        <svg class="w-4 h-4 text-amber-400" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9.663 17h4.673M12 3v1m6.364 1.636l-.707.707M21 12h-1M4 12H3m3.343-5.657l-.707-.707m2.828 9.9a5 5 0 117.072 0l-.548.547A3.374 3.374 0 0014 18.469V19a2 2 0 11-4 0v-.531c0-.895-.356-1.754-.988-2.386l-.548-.547z"></path></svg>
                         <span class="text-xs text-gray-400">Reasoning</span>
                     </div>
                     <svg class="w-4 h-4 text-gray-400 transform transition-transform" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 5l7 7-7 7"></path></svg>
                 </summary>
                 <div class="p-4 text-gray-300 bg-[#0d1117] leading-relaxed border-t border-[#30363d] text-xs md:text-sm">
                     ${escapeHtml(tool.reasoning)}
-                </div>
-            `;
-
-            const execDetails = document.createElement('details');
-            execDetails.open = true;
-            execDetails.innerHTML = `
-                <summary class="p-3 bg-[#161b22] hover:bg-[#21262d] flex items-center gap-2 font-medium text-gray-300 text-xs">
-                    <svg class="w-4 h-4 text-gray-400 transform transition-transform" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M10 20l4-16m4 4l4 4-4 4M6 16l-4-4 4-4"></path></svg>
-                    Parameters & Result${tool.elapsed_ms ? ' <span class=\'text-gray-500\'>(' + tool.elapsed_ms + 'ms' + (tool.row_count ? ', ' + tool.row_count + ' rows' : '') + ')</span>' : ''}
-                </summary>
-                <div class="p-4 bg-[#0d1117] text-xs overflow-x-auto border-t border-[#30363d] space-y-3">
-                    <div class="text-[#79c0ff] font-mono">${escapeHtml(tool.query_or_params)}</div>
-                    ${tryRenderResult(tool.result)}
-                </div>
-            `;
-
+                </div>`;
             block.appendChild(reasoningDetails);
-            block.appendChild(execDetails);
 
-            // Render interactive chart if tool is generate_chart
-            if (tool.tool_name === 'generate_chart') {
-                try {
-                    const chartData = JSON.parse(tool.result);
-                    if (chartData.data_rows && chartData.data_rows.length > 0) {
-                        const chartContainer = document.createElement('div');
-                        chartContainer.className = 'p-4 bg-[#161b22] border-t border-[#30363d] rounded-b-lg';
-                        const canvas = document.createElement('canvas');
-                        canvas.className = 'w-full max-h-72';
-                        chartContainer.appendChild(canvas);
-                        block.appendChild(chartContainer);
+            // ── Evidence Panel (SQL + tables referenced + source data) ──
+            const sqlText = tool.query_or_params || '';
+            const tables = extractTablesFromSQL(sqlText);
 
-                        // Render chart using Chart.js
-                        setTimeout(() => {
-                            const keys = Object.keys(chartData.data_rows[0]);
-                            const labelKey = keys[0];
-                            const valKey = keys[1] || keys[0];
+            const evidenceDetails = document.createElement('details');
+            evidenceDetails.open = true;
+            let evidenceSummary = '<summary class="p-3 bg-[#161b22] hover:bg-[#21262d] flex items-center justify-between font-medium text-gray-300 text-xs">';
+            evidenceSummary += '<div class="flex items-center gap-2"><svg class="w-4 h-4 text-blue-400" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M10 20l4-16m4 4l4 4-4 4M6 16l-4-4 4-4"></path></svg>Evidence';
+            if (tables.length > 0) evidenceSummary += ' <span class="text-gray-500">· ' + tables.length + ' table' + (tables.length > 1 ? 's' : '') + '</span>';
+            evidenceSummary += '</div>';
+            evidenceSummary += '<svg class="w-4 h-4 text-gray-400 transform transition-transform" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 5l7 7-7 7"></path></svg></summary>';
 
-                            const labels = chartData.data_rows.map(r => r[labelKey]);
-                            const values = chartData.data_rows.map(r => parseFloat(r[valKey]) || 0);
+            let evidenceBody = '<div class="p-4 bg-[#0d1117] text-xs space-y-3 border-t border-[#30363d]">';
 
-                            new Chart(canvas, {
-                                type: chartData.chart_type || 'bar',
-                                data: {
-                                    labels: labels,
-                                    datasets: [{
-                                        label: chartData.title || valKey,
-                                        data: values,
-                                        backgroundColor: 'rgba(31, 111, 235, 0.6)',
-                                        borderColor: 'rgba(56, 139, 253, 1)',
-                                        borderWidth: 1.5
-                                    }]
-                                },
-                                options: {
-                                    responsive: true,
-                                    plugins: {
-                                        legend: {labels: {color: '#c9d1d9'}},
-                                        title: {display: true, text: chartData.title, color: '#ffffff'}
-                                    },
-                                    scales: {
-                                        x: {ticks: {color: '#8b949e'}, grid: {color: '#30363d'}},
-                                        y: {ticks: {color: '#8b949e'}, grid: {color: '#30363d'}}
-                                    }
-                                }
-                            });
-                        }, 50);
+            // SQL query with highlighting
+            if (sqlText.trim()) {
+                evidenceBody += '<div class="space-y-1">';
+                evidenceBody += '<div class="text-gray-400 font-semibold uppercase tracking-wider text-[0.6rem]">SQL Query</div>';
+                evidenceBody += '<pre class="bg-[#161b22] p-3 rounded border border-[#30363d] overflow-x-auto text-xs leading-relaxed"><code>' + highlightSQL(sqlText) + '</code></pre>';
+                evidenceBody += '</div>';
+            }
+
+            // Tables referenced
+            if (tables.length > 0) {
+                evidenceBody += '<div class="space-y-1">';
+                evidenceBody += '<div class="text-gray-400 font-semibold uppercase tracking-wider text-[0.6rem]">Tables Referenced</div>';
+                evidenceBody += '<div class="flex flex-wrap gap-1">';
+                for (const t of tables) {
+                    // Also add to known tables cache
+                    if (!knownTables.includes(t.toLowerCase())) {
+                        knownTables.push(t.toLowerCase());
                     }
-                } catch (e) {
-                    console.error('Failed to parse chart data:', e);
+                    evidenceBody += '<span class="badge badge-purple cursor-pointer schema-table-ref" data-table="' + escapeHtml(t) + '">' + escapeHtml(t) + '</span>';
+                }
+                evidenceBody += '</div></div>';
+            }
+
+            // Source data (first few rows)
+            const parsed = tryParseJSON(tool.result);
+            if (isTableLike(parsed)) {
+                const previewRows = parsed.slice(0, 5);
+                evidenceBody += '<div class="space-y-1">';
+                evidenceBody += '<div class="text-gray-400 font-semibold uppercase tracking-wider text-[0.6rem]">Source Data (first ' + previewRows.length + ' of ' + parsed.length + ' rows)</div>';
+                evidenceBody += '<div class="overflow-auto max-h-48 border border-[#30363d] rounded">';
+                evidenceBody += '<table class="w-full text-left text-xs border-collapse"><thead><tr class="bg-[#21262d]">';
+                for (const k of Object.keys(parsed[0])) {
+                    evidenceBody += '<th class="px-2 py-1 font-mono text-[#58a6ff] border-b border-[#30363d] whitespace-nowrap">' + escapeHtml(k) + '</th>';
+                }
+                evidenceBody += '</tr></thead><tbody>';
+                for (const row of previewRows) {
+                    evidenceBody += '<tr class="border-b border-[#21262d]">';
+                    for (const k of Object.keys(parsed[0])) {
+                        const val = row[k];
+                        evidenceBody += '<td class="px-2 py-0.5 whitespace-nowrap text-gray-400">' + (val === null ? '<span class="text-gray-600 italic">NULL</span>' : escapeHtml(String(val))) + '</td>';
+                    }
+                    evidenceBody += '</tr>';
+                }
+                evidenceBody += '</tbody></table></div></div>';
+            }
+
+            evidenceBody += '</div>';
+            evidenceDetails.innerHTML = evidenceSummary + evidenceBody;
+            block.appendChild(evidenceDetails);
+
+            // ── Full Result (interactive table with data-itbl-id wrapper) ──
+            const parsedResult = tryParseJSON(tool.result);
+            const resultWrapper = document.createElement('div');
+            resultWrapper.className = 'p-3 bg-[#0d1117] border-t border-[#30363d]';
+
+            if (isTableLike(parsedResult)) {
+                const tblId = 'itbl-' + Math.random().toString(36).slice(2, 8);
+                resultWrapper.setAttribute('data-itbl-id', tblId);
+                resultWrapper.innerHTML = createInteractiveTable(parsedResult, tblId);
+            } else {
+                resultWrapper.innerHTML = '<pre class="text-gray-400 max-h-60 overflow-y-auto p-2 bg-[#161b22] rounded border border-[#30363d]">' + escapeHtml(tool.result) + '</pre>';
+            }
+            block.appendChild(resultWrapper);
+
+            // ── Comparison mode for compare_players / compare_teams ──
+            if ((tool.tool_name === 'compare_players' || tool.tool_name === 'compare_teams') && isTableLike(parsedResult)) {
+                const compHtml = renderComparisonCard(tool.tool_name, tool.result);
+                if (compHtml) {
+                    const compDiv = document.createElement('div');
+                    compDiv.innerHTML = compHtml;
+                    block.appendChild(compDiv.firstElementChild);
                 }
             }
 
+            // ── Enhanced chart rendering ──
+            if (tool.tool_name === 'generate_chart') {
+                const chartData = tryParseJSON(tool.result);
+                if (chartData && chartData.data_rows && chartData.data_rows.length > 0) {
+                    const chartContainer = createEnhancedChart(tool, chartData);
+                    if (chartContainer) block.appendChild(chartContainer);
+                }
+            }
+
+            // ── Rotate chevrons on toggle ──
             block.querySelectorAll('details').forEach(d => {
                 d.addEventListener('toggle', () => {
-                    const svg = d.querySelector('summary svg');
+                    const svg = d.querySelector('summary svg:last-child');
                     if (svg) {
                         if (d.open) svg.classList.add('rotate-90');
                         else svg.classList.remove('rotate-90');
@@ -416,14 +1124,35 @@
                 });
             });
 
+            // ── Pin button handler ──
+            block.querySelector('.pin-btn')?.addEventListener('click', (e) => {
+                e.stopPropagation();
+                const title = tool.tool_name + ' result';
+                const content = tool.query_or_params ? ('SQL:\n```sql\n' + tool.query_or_params + '\n```\n\nResult:\n```\n' + tool.result.substring(0, 2000) + '\n```') : tool.result.substring(0, 2000);
+                addPinnedItem(title, content, 'tool');
+                updateReportSidebar();
+                flashPinButton(e.target);
+            });
+
             return block;
         }
 
+        function flashPinButton(btn) {
+            btn.textContent = '📍';
+            btn.classList.add('text-amber-400');
+            setTimeout(() => {btn.textContent = '📌'; btn.classList.remove('text-amber-400');}, 800);
+        }
+
+        // ──────────────────────────────────────────────────────
+        // SECTION 7: AGENT RESPONSE RENDERING
+        // ──────────────────────────────────────────────────────
         function addAgentResponse(trace) {
+            currentTrace = trace;
+
             const wrapper = document.createElement('div');
             wrapper.className = 'w-full';
             const inner = document.createElement('div');
-            inner.className = 'p-5 rounded-2xl bg-agent self-start w-full max-w-4xl shadow-md border border-[#30363d]';
+            inner.className = 'p-5 rounded-2xl bg-agent self-start w-full max-w-4xl shadow-md border border-[#30363d] relative';
 
             trace.steps.forEach(step => {
                 if (step.content) {
@@ -434,12 +1163,14 @@
                 }
 
                 step.tool_calls.forEach(tool => {
-                    inner.appendChild(createToolCallBlock(tool));
+                    const toolBlock = createToolCallBlock(tool);
+                    // Store tool data on the block for pinning
+                    toolBlock.__toolData = tool;
+                    inner.appendChild(toolBlock);
                 });
             });
 
             if (trace.final_answer) {
-                // Strip SUGGESTED: lines from the final answer for display
                 const lines = trace.final_answer.split('\n');
                 const displayLines = [];
                 const suggestions = [];
@@ -455,13 +1186,53 @@
                 const finalDiv = document.createElement('div');
                 finalDiv.className = 'mt-4 text-gray-100 leading-relaxed prose prose-invert max-w-none text-sm md:text-base border-t border-[#30363d] pt-4';
                 finalDiv.innerHTML = marked.parse(displayLines.join('\n'));
+                // Pin button on answer
+                const pinBtn = document.createElement('button');
+                pinBtn.className = 'pin-btn absolute top-3 right-3 text-xs text-gray-600 hover:text-amber-400 px-1 transition-colors';
+                pinBtn.textContent = '📌';
+                pinBtn.title = 'Pin answer to report';
+                pinBtn.addEventListener('click', () => {
+                    addPinnedItem('Answer: ' + (displayLines.join(' ').substring(0, 60) + '...'), displayLines.join('\n').substring(0, 3000), 'answer');
+                    updateReportSidebar();
+                    flashPinButton(pinBtn);
+                });
+                finalDiv.style.position = 'relative';
+                finalDiv.appendChild(pinBtn);
                 inner.appendChild(finalDiv);
 
-                // Render follow-up suggestion chips
+                // ── Follow-up action chips ──
                 if (suggestions.length > 0) {
-                    const chipsDiv = document.createElement('div');
-                    chipsDiv.className = 'mt-3 flex flex-wrap gap-2';
-                    chipsDiv.innerHTML = '<span class="text-xs text-gray-500 w-full">Follow-up questions:</span>';
+                    const hasTabularData = trace.steps.some(s => s.tool_calls.some(t => {
+                        const d = tryParseJSON(t.result);
+                        return isTableLike(d);
+                    }));
+
+                    const chipsWrapper = document.createElement('div');
+                    chipsWrapper.className = 'mt-3 space-y-1';
+                    const labelEl = document.createElement('div');
+                    labelEl.className = 'text-xs text-gray-500 font-semibold uppercase tracking-wider';
+                    labelEl.textContent = 'Follow-up Actions';
+                    chipsWrapper.appendChild(labelEl);
+
+                    // Categorized chips
+                    const categorizedChips = document.createElement('div');
+                    categorizedChips.className = 'flex flex-wrap gap-1.5';
+                    for (const s of suggestions) {
+                        const cat = categorizeSuggestion(s, hasTabularData);
+                        const chip = document.createElement('button');
+                        chip.className = 'action-chip ' + cat.color;
+                        chip.innerHTML = cat.icon + ' ' + escapeHtml(s);
+                        chip.onclick = () => {
+                            document.getElementById('message-input').value = s;
+                            document.getElementById('chat-form').dispatchEvent(new Event('submit'));
+                        };
+                        categorizedChips.appendChild(chip);
+                    }
+                    chipsWrapper.appendChild(categorizedChips);
+
+                    // Also add traditional text-only chips below
+                    const textChips = document.createElement('div');
+                    textChips.className = 'flex flex-wrap gap-1.5 mt-2';
                     for (const s of suggestions) {
                         const chip = document.createElement('button');
                         chip.className = 'px-3 py-1 text-xs bg-[#21262d] hover:bg-[#30363d] text-blue-400 border border-[#30363d] rounded-full transition-colors cursor-pointer';
@@ -470,23 +1241,314 @@
                             document.getElementById('message-input').value = s;
                             document.getElementById('chat-form').dispatchEvent(new Event('submit'));
                         };
-                        chipsDiv.appendChild(chip);
+                        textChips.appendChild(chip);
                     }
-                    inner.appendChild(chipsDiv);
+                    chipsWrapper.appendChild(textChips);
+
+                    inner.appendChild(chipsWrapper);
                 }
+            }
+
+            wrapper.appendChild(inner);
+            document.getElementById('chat-messages').appendChild(wrapper);
+            scrollToBottom();
+
+            // Update schema explorer with any discovered tables
+            updateSchemaList();
+        }
+
+        // ──────────────────────────────────────────────────────
+        // SECTION 8: SCHEMA EXPLORER
+        // ──────────────────────────────────────────────────────
+        async function loadSchemaStats() {
+            try {
+                const res = await fetch('/api/stats');
+                const data = await res.json();
+                document.getElementById('schema-table-count').textContent = data.db_tables || '--';
+                document.getElementById('schema-refresh-time').textContent = new Date().toLocaleTimeString();
+            } catch (_) {
+                document.getElementById('schema-table-count').textContent = '?';
             }
         }
 
-        function scrollToBottom() {
-            const main = document.getElementById('chat-container');
-            main.scrollTop = main.scrollHeight;
+        function updateSchemaList() {
+            const list = document.getElementById('schema-list');
+            const filter = (document.getElementById('schema-search')?.value || '').toLowerCase();
+            const filtered = filter ? knownTables.filter(t => t.includes(filter)) : knownTables;
+
+            if (knownTables.length === 0) {
+                list.innerHTML = '<div class="text-xs text-gray-500 text-center py-4">Ask a question to discover tables</div>';
+                return;
+            }
+
+            list.innerHTML = filtered.slice(0, 50).map(t =>
+                '<div class="p-2 rounded bg-[#0d1117] border border-[#21262d] text-xs cursor-pointer hover:bg-[#21262d] flex items-center justify-between" data-table="' + escapeHtml(t) + '">' +
+                '<span class="font-mono text-blue-400 truncate">' + escapeHtml(t) + '</span>' +
+                '<span class="text-gray-600 text-[0.6rem]">→ describe</span>' +
+                '</div>'
+            ).join('');
+
+            if (filtered.length === 0) {
+                list.innerHTML = '<div class="text-xs text-gray-500 text-center py-4">No matching tables</div>';
+            }
+
+            // Click handlers
+            list.querySelectorAll('[data-table]').forEach(el => {
+                el.addEventListener('click', () => {
+                    const tableName = el.getAttribute('data-table');
+                    document.getElementById('message-input').value = 'describe table ' + tableName;
+                    document.getElementById('chat-form').dispatchEvent(new Event('submit'));
+                    // Close sidebar
+                    toggleSidebar('schema', false);
+                });
+            });
+        }
+
+        document.getElementById('schema-search')?.addEventListener('input', updateSchemaList);
+
+        // ──────────────────────────────────────────────────────
+        // SECTION 9: SAVED ANALYSES
+        // ──────────────────────────────────────────────────────
+        function getSavedAnalyses() {
+            try {return JSON.parse(localStorage.getItem('nba_saved_analyses') || '[]');} catch (_) {return [];}
+        }
+
+        function saveCurrentAnalysis() {
+            if (!currentTrace) {alert('No analysis to save. Ask a question first.'); return;}
+            const saved = getSavedAnalyses();
+            // Extract the user question from the first step content or tool call
+            const firstStep = currentTrace.steps[0];
+            let question = 'Query';
+            if (firstStep?.content) question = firstStep.content.substring(0, 50);
+            else if (firstStep?.tool_calls?.[0]?.reasoning) question = firstStep.tool_calls[0].reasoning.substring(0, 50);
+
+            saved.unshift({
+                id: Date.now(),
+                title: question,
+                date: new Date().toISOString(),
+                toolCount: currentTrace.steps.reduce((c, s) => c + s.tool_calls.length, 0),
+                trace: currentTrace
+            });
+            // Keep last 20
+            if (saved.length > 20) saved.length = 20;
+            localStorage.setItem('nba_saved_analyses', JSON.stringify(saved));
+            updateSavedList();
+        }
+
+        function updateSavedList() {
+            const list = document.getElementById('saved-list');
+            const saved = getSavedAnalyses();
+            if (saved.length === 0) {
+                list.innerHTML = '<div class="text-xs text-gray-500 text-center py-4">No saved analyses yet</div>';
+                return;
+            }
+
+            list.innerHTML = saved.map((entry, i) =>
+                '<div class="p-2 rounded bg-[#0d1117] border border-[#21262d] text-xs space-y-1">' +
+                '<div class="text-gray-300 font-medium truncate">' + escapeHtml(entry.title) + '</div>' +
+                '<div class="text-gray-500 flex justify-between items-center">' +
+                '<span>' + new Date(entry.date).toLocaleDateString() + ' · ' + entry.toolCount + ' tools</span>' +
+                '<div class="flex gap-1">' +
+                '<button class="saved-restore text-blue-400 hover:text-blue-300 px-1" data-idx="' + i + '" title="Restore">↩</button>' +
+                '<button class="saved-delete text-red-400 hover:text-red-300 px-1" data-idx="' + i + '" title="Delete">✕</button>' +
+                '</div></div></div>'
+            ).join('');
+
+            list.querySelectorAll('.saved-restore').forEach(btn => {
+                btn.addEventListener('click', () => {
+                    const saved = getSavedAnalyses();
+                    const entry = saved[parseInt(btn.getAttribute('data-idx'))];
+                    if (entry?.trace) {
+                        addAgentResponse(entry.trace);
+                        toggleSidebar('saved', false);
+                    }
+                });
+            });
+            list.querySelectorAll('.saved-delete').forEach(btn => {
+                btn.addEventListener('click', () => {
+                    const saved = getSavedAnalyses();
+                    saved.splice(parseInt(btn.getAttribute('data-idx')), 1);
+                    localStorage.setItem('nba_saved_analyses', JSON.stringify(saved));
+                    updateSavedList();
+                });
+            });
+        }
+
+        // ──────────────────────────────────────────────────────
+        // SECTION 10: REPORT BUILDER (PIN SYSTEM)
+        // ──────────────────────────────────────────────────────
+        function addPinnedItem(title, content, type) {
+            pinnedItems.push({id: Date.now(), title, content, type, note: ''});
+            if (pinnedItems.length > 50) pinnedItems.shift();
+            localStorage.setItem('nba_pinned_items', JSON.stringify(pinnedItems));
+        }
+
+        function updateReportSidebar() {
+            const list = document.getElementById('pinned-list');
+            const countEl = document.getElementById('pin-count');
+            countEl.textContent = pinnedItems.length;
+
+            if (pinnedItems.length === 0) {
+                list.innerHTML = '<div class="text-xs text-gray-500 text-center py-4">Pin tool results or answers to build a report</div>';
+                return;
+            }
+
+            list.innerHTML = pinnedItems.map((item, i) =>
+                '<div class="pinned-item" data-pin-idx="' + i + '">' +
+                '<div class="flex items-start justify-between gap-2">' +
+                '<div class="flex-1 min-w-0">' +
+                '<div class="text-xs text-gray-300 font-medium truncate">' + escapeHtml(item.title) + '</div>' +
+                '<div class="text-[0.6rem] text-gray-500 mt-0.5">' + escapeHtml(item.type) + '</div>' +
+                '</div>' +
+                '<div class="flex gap-0.5 flex-shrink-0">' +
+                '<button class="pin-move-up text-gray-600 hover:text-gray-300 text-xs px-0.5" data-idx="' + i + '" title="Move up">▲</button>' +
+                '<button class="pin-move-down text-gray-600 hover:text-gray-300 text-xs px-0.5" data-idx="' + i + '" title="Move down">▼</button>' +
+                '<button class="pin-remove text-gray-600 hover:text-red-400 text-xs px-0.5" data-idx="' + i + '" title="Remove">✕</button>' +
+                '</div></div>' +
+                '<textarea class="pin-note mt-1 w-full bg-[#161b22] border border-[#30363d] rounded px-2 py-1 text-xs text-gray-400 focus:outline-none focus:border-blue-500 resize-none" rows="1" placeholder="Add note..." data-idx="' + i + '">' + escapeHtml(item.note) + '</textarea>' +
+                '</div>'
+            ).join('');
+
+            // Event handlers
+            list.querySelectorAll('.pin-move-up').forEach(btn => {
+                btn.addEventListener('click', () => {
+                    const i = parseInt(btn.getAttribute('data-idx'));
+                    if (i > 0) {
+                        [pinnedItems[i], pinnedItems[i - 1]] = [pinnedItems[i - 1], pinnedItems[i]];
+                        localStorage.setItem('nba_pinned_items', JSON.stringify(pinnedItems));
+                        updateReportSidebar();
+                    }
+                });
+            });
+            list.querySelectorAll('.pin-move-down').forEach(btn => {
+                btn.addEventListener('click', () => {
+                    const i = parseInt(btn.getAttribute('data-idx'));
+                    if (i < pinnedItems.length - 1) {
+                        [pinnedItems[i], pinnedItems[i + 1]] = [pinnedItems[i + 1], pinnedItems[i]];
+                        localStorage.setItem('nba_pinned_items', JSON.stringify(pinnedItems));
+                        updateReportSidebar();
+                    }
+                });
+            });
+            list.querySelectorAll('.pin-remove').forEach(btn => {
+                btn.addEventListener('click', () => {
+                    pinnedItems.splice(parseInt(btn.getAttribute('data-idx')), 1);
+                    localStorage.setItem('nba_pinned_items', JSON.stringify(pinnedItems));
+                    updateReportSidebar();
+                });
+            });
+            list.querySelectorAll('.pin-note').forEach(ta => {
+                ta.addEventListener('input', () => {
+                    const i = parseInt(ta.getAttribute('data-idx'));
+                    if (pinnedItems[i]) {
+                        pinnedItems[i].note = ta.value;
+                        localStorage.setItem('nba_pinned_items', JSON.stringify(pinnedItems));
+                    }
+                });
+            });
+        }
+
+        function exportReportMarkdown() {
+            if (pinnedItems.length === 0) {alert('No pinned items. Pin some results first.'); return;}
+            let md = '# NBA Analysis Report\n\n';
+            md += 'Generated: ' + new Date().toISOString() + '\n\n---\n\n';
+            pinnedItems.forEach((item, i) => {
+                md += '## ' + (i + 1) + '. ' + item.title + '\n\n';
+                md += item.content + '\n\n';
+                if (item.note) md += '> **Note:** ' + item.note + '\n\n';
+                md += '---\n\n';
+            });
+            downloadFile(md, 'nba-report.md', 'text/markdown');
+        }
+
+        function exportReportHTML() {
+            if (pinnedItems.length === 0) {alert('No pinned items. Pin some results first.'); return;}
+            let html = '<!DOCTYPE html><html><head><meta charset="UTF-8"><title>NBA Analysis Report</title>';
+            html += '<style>body{font-family:system-ui,sans-serif;max-width:900px;margin:2rem auto;padding:1rem;background:#0d1117;color:#c9d1d9}';
+            html += 'h1{color:#58a6ff}h2{color:#1f6feb;border-bottom:1px solid #30363d;padding-bottom:0.25rem}';
+            html += 'pre{background:#161b22;padding:1rem;border-radius:0.5rem;overflow-x:auto;font-size:0.8rem;border:1px solid #30363d}';
+            html += 'blockquote{border-left:3px solid #d29922;padding-left:1rem;color:#8b949e;margin:0.5rem 0}';
+            html += 'hr{border-color:#30363d;margin:1.5rem 0}</style></head><body>';
+            html += '<h1>🏀 NBA Analysis Report</h1><p style="color:#8b949e">Generated: ' + new Date().toISOString() + '</p><hr>';
+
+            pinnedItems.forEach((item, i) => {
+                html += '<h2>' + (i + 1) + '. ' + escapeHtml(item.title) + '</h2>';
+                html += '<div style="white-space:pre-wrap">' + escapeHtml(item.content) + '</div>';
+                if (item.note) html += '<blockquote><strong>Note:</strong> ' + escapeHtml(item.note) + '</blockquote>';
+                html += '<hr>';
+            });
+            html += '</body></html>';
+            downloadFile(html, 'nba-report.html', 'text/html');
+        }
+
+        // ──────────────────────────────────────────────────────
+        // SECTION 11: SIDEBAR TOGGLE UTILITY
+        // ──────────────────────────────────────────────────────
+        function toggleSidebar(name, force) {
+            const sidebar = document.getElementById(name + '-sidebar');
+            const isOpen = sidebar.classList.contains('open');
+            const shouldOpen = typeof force === 'boolean' ? force : !isOpen;
+
+            if (shouldOpen) {
+                sidebar.style.display = 'block';
+                requestAnimationFrame(() => sidebar.classList.add('open'));
+            } else {
+                sidebar.classList.remove('open');
+                setTimeout(() => {sidebar.style.display = 'none';}, 200);
+            }
+        }
+
+        // ──────────────────────────────────────────────────────
+        // SECTION 12: INSIGHTS, CHAT, AND CORE FUNCTIONALITY
+        // ──────────────────────────────────────────────────────
+        async function loadInsights() {
+            const grid = document.getElementById('insights-grid');
+            try {
+                const res = await fetch('/api/insights');
+                const data = await res.json();
+                grid.innerHTML = '';
+                const categoryColors = {
+                    stats: 'border-blue-700/50 bg-blue-900/20',
+                    leader: 'border-amber-700/50 bg-amber-900/20',
+                    range: 'border-emerald-700/50 bg-emerald-900/20',
+                    meta: 'border-purple-700/50 bg-purple-900/20',
+                };
+                for (const card of data.cards) {
+                    const colorClass = categoryColors[card.category] || 'border-gray-700 bg-gray-900/20';
+                    const div = document.createElement('div');
+                    div.className = 'p-3 rounded-lg border ' + colorClass + ' text-center';
+                    div.innerHTML = '<div class="text-2xl font-bold text-white truncate">' + escapeHtml(card.value) + '</div>' +
+                        '<div class="text-xs text-gray-400 mt-1">' + escapeHtml(card.title) + '</div>' +
+                        '<div class="text-xs text-gray-600 mt-0.5">' + escapeHtml(card.subtitle) + '</div>';
+                    grid.appendChild(div);
+                }
+            } catch (e) {
+                grid.innerHTML = '<div class="col-span-full text-xs text-red-400 text-center py-2">Insights unavailable</div>';
+            }
+        }
+
+        function addUserMessage(text) {
+            const wrapper = document.createElement('div');
+            wrapper.className = 'flex justify-end w-full';
+            const bubble = document.createElement('div');
+            bubble.className = 'p-3.5 px-5 rounded-2xl bg-user self-end max-w-2xl shadow-sm text-sm md:text-base leading-relaxed';
+            bubble.textContent = text;
+            wrapper.appendChild(bubble);
+            document.getElementById('chat-messages').appendChild(wrapper);
+            scrollToBottom();
         }
 
         function setLoading(isLoading) {
+            const input = document.getElementById('message-input');
+            const btnText = document.getElementById('btn-text');
+            const btnLoader = document.getElementById('btn-loader');
             input.disabled = isLoading;
             btnText.classList.toggle('hidden', isLoading);
             btnLoader.classList.toggle('hidden', !isLoading);
         }
+
+        const form = document.getElementById('chat-form');
+        const input = document.getElementById('message-input');
 
         form.addEventListener('submit', async (e) => {
             e.preventDefault();
@@ -501,10 +1563,7 @@
                 const response = await fetch('/api/chat', {
                     method: 'POST',
                     headers: {'Content-Type': 'application/json'},
-                    body: JSON.stringify({
-                        session_id: currentSessionId,
-                        message: message
-                    })
+                    body: JSON.stringify({session_id: currentSessionId, message: message})
                 });
 
                 if (!response.ok) throw new Error('Network response was not ok');
@@ -513,19 +1572,81 @@
                 addAgentResponse(data);
             } catch (error) {
                 console.error('Error:', error);
-                alert('An error occurred processing your query. Check the browser console.');
+                const errDiv = document.createElement('div');
+                errDiv.className = 'w-full';
+                errDiv.innerHTML = '<div class="p-4 rounded-2xl bg-agent border border-red-700/50 text-red-400 text-sm">❌ An error occurred processing your query. Check the browser console.</div>';
+                document.getElementById('chat-messages').appendChild(errDiv);
+                scrollToBottom();
             } finally {
                 setLoading(false);
             }
         });
 
-        // History sidebar toggle
-        const sidebar = document.getElementById('history-sidebar');
+        // ──────────────────────────────────────────────────────
+        // SECTION 13: HEADER BUTTONS
+        // ──────────────────────────────────────────────────────
+        document.getElementById('btn-new-chat').addEventListener('click', async () => {
+            if (confirm('Start a new session and clear conversation history?')) {
+                await fetch('/api/reset', {
+                    method: 'POST',
+                    headers: {'Content-Type': 'application/json'},
+                    body: JSON.stringify({session_id: currentSessionId})
+                });
+                currentSessionId = crypto.randomUUID();
+                localStorage.setItem('nba_agent_session', currentSessionId);
+                document.getElementById('session-id-display').textContent = currentSessionId.substring(0, 8);
+                document.getElementById('chat-messages').innerHTML = `
+                    <div class="p-4 rounded-xl bg-agent self-start max-w-3xl border border-[#30363d] text-sm text-gray-300">
+                        New session started! What would you like to explore next?
+                    </div>`;
+                currentTrace = null;
+                // Destroy active charts
+                activeCharts.forEach(c => {try {c.destroy();} catch (_) { } });
+                activeCharts = [];
+            }
+        });
+
+        document.getElementById('btn-export').addEventListener('click', () => {
+            window.open('/api/export?session=' + encodeURIComponent(currentSessionId), '_blank');
+        });
+
+        // Schema sidebar
+        document.getElementById('btn-schema').addEventListener('click', () => {
+            loadSchemaStats();
+            updateSchemaList();
+            toggleSidebar('schema');
+        });
+        document.getElementById('btn-close-schema').addEventListener('click', () => toggleSidebar('schema', false));
+
+        // Saved sidebar
+        document.getElementById('btn-saved').addEventListener('click', () => {
+            updateSavedList();
+            toggleSidebar('saved');
+        });
+        document.getElementById('btn-close-saved').addEventListener('click', () => toggleSidebar('saved', false));
+        document.getElementById('btn-save-current').addEventListener('click', saveCurrentAnalysis);
+
+        // Report sidebar
+        document.getElementById('btn-report').addEventListener('click', () => {
+            updateReportSidebar();
+            toggleSidebar('report');
+        });
+        document.getElementById('btn-close-report').addEventListener('click', () => toggleSidebar('report', false));
+        document.getElementById('btn-export-md').addEventListener('click', exportReportMarkdown);
+        document.getElementById('btn-export-html').addEventListener('click', exportReportHTML);
+        document.getElementById('btn-clear-pins').addEventListener('click', () => {
+            if (confirm('Clear all pinned items?')) {
+                pinnedItems = [];
+                localStorage.setItem('nba_pinned_items', '[]');
+                updateReportSidebar();
+            }
+        });
+
+        // History sidebar
+        const historySidebar = document.getElementById('history-sidebar');
         const historyList = document.getElementById('history-list');
         document.getElementById('btn-history').addEventListener('click', async () => {
-            sidebar.style.display = 'block';
-            requestAnimationFrame(() => sidebar.classList.remove('translate-x-full'));
-            // Fetch history
+            toggleSidebar('history', true);
             try {
                 const res = await fetch('/api/history');
                 const entries = await res.json();
@@ -536,10 +1657,10 @@
                     for (const e of entries) {
                         const div = document.createElement('div');
                         div.className = 'p-2 rounded bg-[#0d1117] border border-[#21262d] text-xs cursor-pointer hover:bg-[#21262d]';
-                        div.title = 'Click to re-run';
                         div.addEventListener('click', () => {
                             document.getElementById('message-input').value = e.sql;
-                            document.getElementById('chat-form').dispatchEvent(new Event('submit'));
+                            form.dispatchEvent(new Event('submit'));
+                            toggleSidebar('history', false);
                         });
                         const sqlDiv = document.createElement('div');
                         sqlDiv.className = 'text-blue-400 font-mono truncate';
@@ -547,7 +1668,7 @@
                         div.appendChild(sqlDiv);
                         const metaDiv = document.createElement('div');
                         metaDiv.className = 'text-gray-500 mt-1';
-                        metaDiv.textContent = `${e.elapsed_ms}ms \u00b7 ${e.row_count} rows \u00b7 ${e.success ? '\u2705' : '\u274c'}`;
+                        metaDiv.textContent = e.elapsed_ms + 'ms \u00b7 ' + e.row_count + ' rows \u00b7 ' + (e.success ? '\u2705' : '\u274c');
                         div.appendChild(metaDiv);
                         historyList.appendChild(div);
                     }
@@ -556,24 +1677,233 @@
                 historyList.innerHTML = '<div class="text-xs text-red-400 text-center py-4">Failed to load history</div>';
             }
         });
-        document.getElementById('btn-close-history').addEventListener('click', () => {
-            sidebar.classList.add('translate-x-full');
-            setTimeout(() => sidebar.style.display = 'none', 200);
+        document.getElementById('btn-close-history').addEventListener('click', () => toggleSidebar('history', false));
+
+        // ──────────────────────────────────────────────────────
+        // SECTION 14: TEMPLATE BUTTONS
+        // ──────────────────────────────────────────────────────
+        document.getElementById('template-bar').addEventListener('click', (e) => {
+            const btn = e.target.closest('.template-pill');
+            if (!btn) return;
+            const template = btn.getAttribute('data-template');
+            if (template) {
+                document.getElementById('message-input').value = template;
+                form.dispatchEvent(new Event('submit'));
+            }
         });
 
-        // CSV copy delegated handler
+        // ──────────────────────────────────────────────────────
+        // SECTION 15: EVENT DELEGATION FOR DYNAMIC ELEMENTS
+        // ──────────────────────────────────────────────────────
         document.addEventListener('click', function (e) {
-            const btn = e.target.closest('.csv-copy-btn');
-            if (!btn) return;
-            const csv = (() => {try {return JSON.parse(btn.getAttribute('data-csv') || '');} catch (_) {return '';} })();
-            navigator.clipboard.writeText(csv).then(() => {
-                btn.textContent = 'Copied!';
-                setTimeout(() => btn.textContent = 'Copy CSV', 1500);
-            }).catch(() => {
-                btn.textContent = 'Copy failed';
-                setTimeout(() => btn.textContent = 'Copy CSV', 1500);
-            });
+            // Interactive table: sort
+            const sortBtn = e.target.closest('.itbl-sort');
+            if (sortBtn) {
+                const id = sortBtn.getAttribute('data-id');
+                const idx = parseInt(sortBtn.getAttribute('data-idx'));
+                const state = window['__tbl_' + id];
+                if (!state) return;
+                if (state.sortCol === idx) {
+                    state.sortDir = state.sortDir === 'asc' ? 'desc' : 'asc';
+                } else {
+                    state.sortCol = idx;
+                    state.sortDir = 'asc';
+                }
+                state.page = 1;
+                refreshInteractiveTable(id);
+                return;
+            }
+
+            // Interactive table: filter (input event handled separately)
+            // Interactive table: pagination
+            const pageBtn = e.target.closest('.itbl-page');
+            if (pageBtn) {
+                const id = pageBtn.getAttribute('data-id');
+                const page = parseInt(pageBtn.getAttribute('data-page'));
+                const state = window['__tbl_' + id];
+                if (state) {state.page = page; refreshInteractiveTable(id);}
+                return;
+            }
+            const prevBtn = e.target.closest('.itbl-prev');
+            if (prevBtn) {
+                const id = prevBtn.getAttribute('data-id');
+                const state = window['__tbl_' + id];
+                if (state && state.page > 1) {state.page--; refreshInteractiveTable(id);}
+                return;
+            }
+            const nextBtn = e.target.closest('.itbl-next');
+            if (nextBtn) {
+                const id = nextBtn.getAttribute('data-id');
+                const state = window['__tbl_' + id];
+                if (state) {
+                    const perPage = state.perPage;
+                    const filtered = state.rows.filter(r => {
+                        if (!state.filter.trim()) return true;
+                        const q = state.filter.toLowerCase();
+                        return state.keys.some(k => String(r[k] || '').toLowerCase().includes(q));
+                    });
+                    const totalPages = Math.max(1, Math.ceil(filtered.length / perPage));
+                    if (state.page < totalPages) {state.page++; refreshInteractiveTable(id);}
+                }
+                return;
+            }
+
+            // Interactive table: copy CSV
+            const copyCsvBtn = e.target.closest('.itbl-copy-csv');
+            if (copyCsvBtn) {
+                const id = copyCsvBtn.getAttribute('data-id');
+                const state = window['__tbl_' + id];
+                if (state) {
+                    const csv = rowsToCsv(state.rows);
+                    navigator.clipboard.writeText(csv).then(() => {
+                        copyCsvBtn.textContent = '✓';
+                        setTimeout(() => copyCsvBtn.textContent = '📋', 1500);
+                    }).catch(() => {
+                        copyCsvBtn.textContent = '✕';
+                        setTimeout(() => copyCsvBtn.textContent = '📋', 1500);
+                    });
+                }
+                return;
+            }
+
+            // Interactive table: download JSON
+            const dlJsonBtn = e.target.closest('.itbl-download-json');
+            if (dlJsonBtn) {
+                const id = dlJsonBtn.getAttribute('data-id');
+                const state = window['__tbl_' + id];
+                if (state) {
+                    downloadFile(JSON.stringify(state.rows, null, 2), 'data-' + id + '.json', 'application/json');
+                }
+                return;
+            }
+
+            // Legacy CSV copy button
+            const legacyCsvBtn = e.target.closest('.csv-copy-btn');
+            if (legacyCsvBtn) {
+                const csv = (() => {try {return JSON.parse(legacyCsvBtn.getAttribute('data-csv') || '');} catch (_) {return '';} })();
+                navigator.clipboard.writeText(csv).then(() => {
+                    legacyCsvBtn.textContent = 'Copied!';
+                    setTimeout(() => legacyCsvBtn.textContent = 'Copy CSV', 1500);
+                }).catch(() => {
+                    legacyCsvBtn.textContent = 'Copy failed';
+                    setTimeout(() => legacyCsvBtn.textContent = 'Copy CSV', 1500);
+                });
+                return;
+            }
+
+            // Schema table reference click
+            const schemaRef = e.target.closest('.schema-table-ref');
+            if (schemaRef) {
+                const tableName = schemaRef.getAttribute('data-table');
+                document.getElementById('message-input').value = 'describe table ' + tableName;
+                form.dispatchEvent(new Event('submit'));
+                return;
+            }
+
+            // Chart controls: download PNG
+            const chartDl = e.target.closest('.chart-download');
+            if (chartDl) {
+                const chartId = chartDl.getAttribute('data-chart');
+                const canvas = document.getElementById(chartId);
+                if (canvas) {
+                    const link = document.createElement('a');
+                    link.download = 'chart-' + chartId + '.png';
+                    link.href = canvas.toDataURL('image/png');
+                    link.click();
+                }
+                return;
+            }
+
+            // Chart controls: source data toggle
+            const chartSrc = e.target.closest('.chart-source-toggle');
+            if (chartSrc) {
+                const chartId = chartSrc.getAttribute('data-chart');
+                const srcDiv = document.getElementById(chartId + '-data');
+                if (srcDiv) {
+                    srcDiv.classList.toggle('hidden');
+                    chartSrc.textContent = srcDiv.classList.contains('hidden') ? '📊 Data' : '📊 Hide';
+                }
+                return;
+            }
         });
+
+        // Interactive table: filter input (input event for responsiveness)
+        document.addEventListener('input', function (e) {
+            const filterInput = e.target.closest('.itbl-filter');
+            if (filterInput) {
+                const id = filterInput.getAttribute('data-id');
+                const state = window['__tbl_' + id];
+                if (state) {
+                    state.filter = filterInput.value;
+                    state.page = 1;
+                    refreshInteractiveTable(id);
+                }
+                return;
+            }
+        });
+
+        // Interactive table: column toggles
+        document.addEventListener('change', function (e) {
+            const colToggle = e.target.closest('.itbl-col-toggle');
+            if (colToggle) {
+                const id = colToggle.getAttribute('data-id');
+                const col = colToggle.getAttribute('data-col');
+                const state = window['__tbl_' + id];
+                if (state) {
+                    if (colToggle.checked) state.visibleCols.add(col);
+                    else state.visibleCols.delete(col);
+                    state.page = 1;
+                    refreshInteractiveTable(id);
+                }
+                return;
+            }
+
+            // Chart axis/type selectors
+            const axisSelect = e.target.closest('.chart-axis-x, .chart-axis-y');
+            if (axisSelect) {
+                const chartId = axisSelect.getAttribute('data-chart');
+                const role = axisSelect.getAttribute('data-role');
+                const container = axisSelect.closest('div').parentElement;
+                const typeSelect = container.querySelector('.chart-type');
+                const type = typeSelect ? typeSelect.value : 'bar';
+                const xSelect = container.querySelector('.chart-axis-x');
+                const ySelect = container.querySelector('.chart-axis-y');
+                const xIdx = parseInt(xSelect?.value || '0');
+                const yIdx = parseInt(ySelect?.value || '1');
+
+                // Get chart data from the table state
+                const srcState = window['__tbl_' + chartId + '-src'];
+                if (srcState && srcState.rows) {
+                    const keys = Object.keys(srcState.rows[0]);
+                    renderChartInstance(chartId, {data_rows: srcState.rows, title: ''}, keys, type, xIdx, yIdx);
+                }
+                return;
+            }
+
+            const typeSelect = e.target.closest('.chart-type');
+            if (typeSelect) {
+                const chartId = typeSelect.getAttribute('data-chart');
+                const container = typeSelect.closest('div').parentElement;
+                const type = typeSelect.value;
+                const xSelect = container.querySelector('.chart-axis-x');
+                const ySelect = container.querySelector('.chart-axis-y');
+                const xIdx = parseInt(xSelect?.value || '0');
+                const yIdx = parseInt(ySelect?.value || '1');
+                const srcState = window['__tbl_' + chartId + '-src'];
+                if (srcState && srcState.rows) {
+                    const keys = Object.keys(srcState.rows[0]);
+                    renderChartInstance(chartId, {data_rows: srcState.rows, title: ''}, keys, type, xIdx, yIdx);
+                }
+                return;
+            }
+        });
+
+        // ──────────────────────────────────────────────────────
+        // SECTION 16: INITIALIZATION
+        // ──────────────────────────────────────────────────────
+        loadInsights();
+        loadSchemaStats();
+        updateReportSidebar();
     </script>
 </body>
 
