@@ -100,8 +100,6 @@ pub struct Agent {
     openrouter_url: String,
     /// OpenRouter model identifier (env: MODEL, default: qwen/qwen3.7-flash).
     model: String,
-    /// Fallback model if primary fails (env: FALLBACK_MODEL, optional).
-    fallback_model: Option<String>,
     /// Max reasoning loop iterations per turn (env: MAX_ITERATIONS, default: 12).
     max_iterations: usize,
     dirty: Arc<PlMutex<bool>>,
@@ -215,7 +213,6 @@ impl Agent {
         let openrouter_url = std::env::var("OPENROUTER_BASE_URL")
             .unwrap_or_else(|_| "https://openrouter.ai/api/v1/chat/completions".to_string());
         let model = std::env::var("MODEL").unwrap_or_else(|_| "qwen/qwen3.7-flash".to_string());
-        let fallback_model = std::env::var("FALLBACK_MODEL").ok().filter(|s| !s.is_empty());
         let max_iterations: usize =
             std::env::var("MAX_ITERATIONS").unwrap_or_else(|_| "12".to_string()).parse().unwrap_or(12);
         let key_tables: Vec<&str> = vec![
@@ -223,7 +220,7 @@ impl Agent {
             "team",
             "game",
             "common_player_info",
-            "player_game_stats",
+            "fact_player_game_stats",
             "play_by_play",
             "line_score",
             "draft_history",
@@ -265,7 +262,6 @@ impl Agent {
             sessions_path,
             openrouter_url,
             model,
-            fallback_model,
             max_iterations,
             dirty: dirty.clone(),
             save_signal: save_signal.clone(),
@@ -680,87 +676,81 @@ impl Agent {
                ])
     }
 
-    /// Internal: run a single OpenRouter chat completion with retry and fallback.
+    /// Internal: run a single OpenRouter chat completion with retry.
     async fn call_openrouter(&self, messages: &[ChatMessage], tools: &Value) -> Result<ChatCompletion> {
         let max_retries = 3;
         let mut last_err = None;
 
-        // Try primary model, then fallback, each with retries
-        let models: Vec<&str> =
-            if let Some(ref fb) = self.fallback_model { vec![&self.model, fb] } else { vec![&self.model] };
+        for attempt in 0..max_retries {
+            if attempt > 0 {
+                let delay_ms = 1000 * 2u64.pow(attempt as u32 - 1);
+                tracing::info!("Retrying after {}ms (attempt {})", delay_ms, attempt + 1);
+                tokio::time::sleep(std::time::Duration::from_millis(delay_ms)).await;
+            }
 
-        for model_name in &models {
-            for attempt in 0..max_retries {
-                if attempt > 0 {
-                    let delay_ms = 1000 * 2u64.pow(attempt as u32 - 1);
-                    tracing::info!("Retrying {} after {}ms (attempt {})", model_name, delay_ms, attempt + 1);
-                    tokio::time::sleep(std::time::Duration::from_millis(delay_ms)).await;
-                }
+            let req_body = json!({
+                "model": self.model,
+                "messages": messages,
+                "tools": tools,
+                "reasoning": { "exclude": false }
+            });
 
-                let req_body = json!({
-                    "model": model_name,
-                    "messages": messages,
-                    "tools": tools,
-                    "reasoning": { "exclude": false }
-                });
-
-                let res = match self
-                    .http_client
-                    .post(&self.openrouter_url)
-                    .header("Authorization", format!("Bearer {}", self.api_key))
-                    .header("HTTP-Referer", "https://github.com/db-analyze-agent")
-                    .header("X-Title", "NBA Data Agent")
-                    .json(&req_body)
-                    .timeout(std::time::Duration::from_secs(60))
-                    .send()
-                    .await
-                {
-                    Ok(r) => r,
-                    Err(e) => {
-                        last_err = Some(anyhow!("HTTP error: {}", e));
-                        continue;
-                    }
-                };
-
-                if !res.status().is_success() {
-                    let status = res.status();
-                    let err_text = res.text().await.unwrap_or_default();
-                    last_err = Some(anyhow!("API error {}: {}", status, err_text));
+            let res = match self
+                .http_client
+                .post(&self.openrouter_url)
+                .header("Authorization", format!("Bearer {}", self.api_key))
+                .header("HTTP-Referer", "https://github.com/db-analyze-agent")
+                .header("X-Title", "NBA Data Agent")
+                .json(&req_body)
+                .timeout(std::time::Duration::from_secs(60))
+                .send()
+                .await
+            {
+                Ok(r) => r,
+                Err(e) => {
+                    last_err = Some(anyhow!("HTTP error: {}", e));
                     continue;
                 }
+            };
 
-                let res_json: Value = match res.json().await {
-                    Ok(v) => v,
-                    Err(e) => {
-                        last_err = Some(anyhow!("JSON parse error: {}", e));
-                        continue;
-                    }
-                };
-
-                let choice = res_json["choices"][0].clone();
-                let msg_val = &choice["message"];
-
-                let content = msg_val["content"].as_str().map(|s| s.to_string());
-                let reasoning = msg_val["reasoning"].as_str().map(|s| s.to_string());
-                let mut tool_calls = Vec::new();
-                if let Some(arr) = msg_val["tool_calls"].as_array() {
-                    for tc in arr {
-                        let fn_val = &tc["function"];
-                        let args_str = fn_val["arguments"].as_str().unwrap_or("{}");
-                        let arguments: Value = serde_json::from_str(args_str).unwrap_or(Value::Null);
-                        tool_calls.push(ParsedToolCall {
-                            id: tc["id"].as_str().unwrap_or("").to_string(),
-                            name: fn_val["name"].as_str().unwrap_or("").to_string(),
-                            arguments,
-                        });
-                    }
-                }
-
-                return Ok(ChatCompletion { content, reasoning, tool_calls });
+            if !res.status().is_success() {
+                let status = res.status();
+                let err_text = res.text().await.unwrap_or_default();
+                last_err = Some(anyhow!("API error {}: {}", status, err_text));
+                continue;
             }
+
+            let res_json: Value = match res.json().await {
+                Ok(v) => v,
+                Err(e) => {
+                    last_err = Some(anyhow!("JSON parse error: {}", e));
+                    continue;
+                }
+            };
+
+            let choice = res_json["choices"][0].clone();
+            let msg_val = &choice["message"];
+
+            let content = msg_val["content"].as_str().map(|s| s.to_string());
+            let reasoning = msg_val["reasoning"].as_str().map(|s| s.to_string());
+            let mut tool_calls = Vec::new();
+            if let Some(arr) = msg_val["tool_calls"].as_array() {
+                for tc in arr {
+                    let fn_val = &tc["function"];
+                    let args_str = fn_val["arguments"].as_str().unwrap_or("{}");
+                    let arguments: Value = serde_json::from_str(args_str).unwrap_or(Value::Null);
+                    tool_calls.push(ParsedToolCall {
+                        id: tc["id"].as_str().unwrap_or("").to_string(),
+                        name: fn_val["name"].as_str().unwrap_or("").to_string(),
+                        arguments,
+                    });
+                }
+            }
+
+            return Ok(ChatCompletion { content, reasoning, tool_calls });
         }
 
-        Err(last_err.unwrap_or_else(|| anyhow!("All models failed")))
+        Err(last_err.unwrap_or_else(|| anyhow!("All retries failed")))
     }
 
     /// Push a parsed completion into the message history and return a
@@ -1123,16 +1113,20 @@ impl Agent {
                 let p2 = args["player2"].as_str().unwrap_or("");
                 let season_filter = args["season"]
                     .as_str()
-                    .map(|s| format!(" AND season_id = '{}'", Self::sql_safe(s)))
+                    .map(|s| format!(" AND g.season_id = '{}'", Self::sql_safe(s)))
                     .unwrap_or_default();
                 let reasoning = format!("Comparing {} vs {}", p1, p2);
                 let sql = format!(
-                    "SELECT player_name, season_id, SUM(pts) as total_pts, \
-                           ROUND(AVG(pts),1) as ppg, ROUND(AVG(reb),1) as rpg, \
-                           ROUND(AVG(ast),1) as apg, COUNT(*) as games \
-                     FROM player_game_stats \
-                     WHERE player_name IN ('{}', '{}'){} \
-                     GROUP BY player_name, season_id ORDER BY player_name, season_id",
+                    "SELECT p.display_first_last as player_name, g.season_id, \
+                           SUM(fpgs.points) as total_pts, ROUND(AVG(fpgs.points),1) as ppg, \
+                           ROUND(AVG(fpgs.reb),1) as rpg, ROUND(AVG(fpgs.assists),1) as apg, \
+                           COUNT(*) as games \
+                     FROM fact_player_game_stats fpgs \
+                     JOIN common_player_info p ON fpgs.person_id = p.person_id \
+                     JOIN game g ON fpgs.game_id = g.game_id \
+                     WHERE p.display_first_last IN ('{}', '{}'){} \
+                     GROUP BY p.display_first_last, g.season_id \
+                     ORDER BY p.display_first_last, g.season_id",
                     Self::sql_safe(p1),
                     Self::sql_safe(p2),
                     season_filter
@@ -1189,9 +1183,12 @@ impl Agent {
                 let sql = if streak_type == "wins" {
                     format!(
                         "WITH game_flags AS ( \
-                           SELECT game_id, game_date, \
-                                  CASE WHEN team_score > opp_score THEN 1 ELSE 0 END as won \
-                           FROM player_game_stats WHERE player_name = '{}' \
+                           SELECT fpgs.game_id, g.game_date, \
+                                  CASE WHEN fpgs.is_win THEN 1 ELSE 0 END as won \
+                           FROM fact_player_game_stats fpgs \
+                           JOIN common_player_info p ON fpgs.person_id = p.person_id \
+                           JOIN game g ON fpgs.game_id = g.game_id \
+                           WHERE p.display_first_last = '{}' \
                         ), \
                         streak_groups AS ( \
                            SELECT *, SUM(CASE WHEN won = 0 THEN 1 ELSE 0 END) OVER (ORDER BY game_date) as grp \
@@ -1205,9 +1202,12 @@ impl Agent {
                 } else {
                     format!(
                         "WITH game_flags AS ( \
-                           SELECT game_id, game_date, {}, \
-                                  CASE WHEN {} >= {} THEN 1 ELSE 0 END as above \
-                           FROM player_game_stats WHERE player_name = '{}' \
+                           SELECT fpgs.game_id, g.game_date, fpgs.{}, \
+                                  CASE WHEN fpgs.{} >= {} THEN 1 ELSE 0 END as above \
+                           FROM fact_player_game_stats fpgs \
+                           JOIN common_player_info p ON fpgs.person_id = p.person_id \
+                           JOIN game g ON fpgs.game_id = g.game_id \
+                           WHERE p.display_first_last = '{}' \
                         ), \
                         streak_groups AS ( \
                            SELECT *, SUM(CASE WHEN above = 0 THEN 1 ELSE 0 END) OVER (ORDER BY game_date) as grp \
@@ -1230,19 +1230,25 @@ impl Agent {
                 let reasoning = format!("Building profile for {}", player);
                 let safe = Self::sql_safe(player);
                 let sql = format!(
-                    "SELECT 'career_summary' as section, player_name, \
-                           COUNT(*) as games, SUM(pts) as total_pts, \
-                           ROUND(AVG(pts),1) as ppg, ROUND(AVG(reb),1) as rpg, \
-                           ROUND(AVG(ast),1) as apg \
-                     FROM player_game_stats WHERE player_name = '{}' \
-                     GROUP BY player_name \
+                    "SELECT 'career' as section, p.display_first_last as player_name, \
+                           COUNT(*) as games, SUM(fpgs.points) as total_pts, \
+                           ROUND(AVG(fpgs.points),1) as ppg, ROUND(AVG(fpgs.reb),1) as rpg, \
+                           ROUND(AVG(fpgs.assists),1) as apg \
+                     FROM fact_player_game_stats fpgs \
+                     JOIN common_player_info p ON fpgs.person_id = p.person_id \
+                     WHERE p.display_first_last = '{}' \
+                     GROUP BY p.display_first_last \
                      UNION ALL \
-                     SELECT 'best_season' as section, player_name, \
-                           season_id as games, SUM(pts) as total_pts, \
-                           ROUND(AVG(pts),1) as ppg, ROUND(AVG(reb),1) as rpg, \
-                           ROUND(AVG(ast),1) as apg \
-                     FROM player_game_stats WHERE player_name = '{}' \
-                     GROUP BY player_name, season_id ORDER BY total_pts DESC LIMIT 5",
+                     SELECT 'best_season', p.display_first_last, \
+                           g.season_id, SUM(fpgs.points), \
+                           ROUND(AVG(fpgs.points),1), ROUND(AVG(fpgs.reb),1), \
+                           ROUND(AVG(fpgs.assists),1) \
+                     FROM fact_player_game_stats fpgs \
+                     JOIN common_player_info p ON fpgs.person_id = p.person_id \
+                     JOIN game g ON fpgs.game_id = g.game_id \
+                     WHERE p.display_first_last = '{}' \
+                     GROUP BY p.display_first_last, g.season_id \
+                     ORDER BY SUM(fpgs.points) DESC LIMIT 5",
                     safe, safe
                 );
                 let result_str = match self.db.run_sql(sql.clone(), Some(20)).await {
@@ -1258,10 +1264,13 @@ impl Agent {
                 let context = args["context"].as_str().unwrap_or("");
                 let reasoning = format!("Ranking {} = {} in {} ({})", stat, value, scope, context);
                 let (rank_col, order) = match stat {
-                    "points" => ("total_pts", "DESC"),
-                    "rebounds" => ("total_reb", "DESC"),
-                    "assists" => ("total_ast", "DESC"),
-                    _ => ("total_pts", "DESC"),
+                    "points" => ("points", "DESC"),
+                    "rebounds" => ("reb", "DESC"),
+                    "assists" => ("assists", "DESC"),
+                    "steals" => ("steals", "DESC"),
+                    "blocks" => ("blocks", "DESC"),
+                    "threes" => ("fg3m", "DESC"),
+                    _ => ("points", "DESC"),
                 };
                 let where_clause = match scope {
                     "franchise" => format!("WHERE team_name = '{}' ", Self::sql_safe(context)),
@@ -1271,10 +1280,12 @@ impl Agent {
                 };
                 let sql = format!(
                     "WITH ranked AS ( \
-                       SELECT player_name, SUM({}) as stat_val, \
-                              ROW_NUMBER() OVER (ORDER BY SUM({}) {}) as rank \
-                       FROM player_game_stats {} \
-                       GROUP BY player_name \
+                       SELECT p.display_first_last as player_name, SUM(fpgs.{}) as stat_val, \
+                              ROW_NUMBER() OVER (ORDER BY SUM(fpgs.{}) {}) as rank \
+                       FROM fact_player_game_stats fpgs \
+                       JOIN common_player_info p ON fpgs.person_id = p.person_id \
+                       {} \
+                       GROUP BY p.display_first_last \
                     ) \
                     SELECT * FROM ranked \
                     WHERE stat_val <= {} ORDER BY rank LIMIT 20",
@@ -1295,18 +1306,20 @@ impl Agent {
                 let limit: usize = args["limit"].as_u64().unwrap_or(10) as usize;
                 let reasoning = format!("Finding {} leaders", stat);
                 let (col, label) = match stat {
-                    "points" => ("pts", "ppg"),
+                    "points" => ("points", "ppg"),
                     "rebounds" => ("reb", "rpg"),
-                    "assists" => ("ast", "apg"),
+                    "assists" => ("assists", "apg"),
                     "threes" => ("fg3m", "3pg"),
-                    "steals" => ("stl", "spg"),
-                    "blocks" => ("blk", "bpg"),
-                    _ => ("pts", "ppg"),
+                    "steals" => ("steals", "spg"),
+                    "blocks" => ("blocks", "bpg"),
+                    _ => ("points", "ppg"),
                 };
                 let sql = format!(
-                    "SELECT player_name, ROUND(AVG({}),1) as {}, COUNT(*) as games \
-                     FROM player_game_stats WHERE 1=1{} \
-                     GROUP BY player_name HAVING COUNT(*) >= 10 \
+                    "SELECT p.display_first_last as player_name, ROUND(AVG(fpgs.{}),1) as {}, COUNT(*) as games \
+                     FROM fact_player_game_stats fpgs \
+                     JOIN common_player_info p ON fpgs.person_id = p.person_id \
+                     WHERE 1=1{} \
+                     GROUP BY p.display_first_last HAVING COUNT(*) >= 10 \
                      ORDER BY {} DESC LIMIT {}",
                     col, label, season_filter, label, limit
                 );
@@ -1379,14 +1392,12 @@ impl Agent {
                 let reasoning = format!("Checking {} coverage for {}", entity_type, entity_name);
                 let sql = match entity_type {
                     "player" => format!(
-                        "SELECT 'player_game_stats' as table_name, COUNT(*) as row_count, \
-                               MIN(game_date) as earliest, MAX(game_date) as latest, \
-                               COUNT(DISTINCT season_id) as seasons \
-                         FROM player_game_stats WHERE player_name = '{}' \
-                         UNION ALL \
-                         SELECT 'player_career_stats', COUNT(*), MIN(season_id), MAX(season_id), COUNT(DISTINCT season_id) \
-                         FROM player_career_stats WHERE player_name = '{}'",
-                        Self::sql_safe(entity_name),
+                        "SELECT 'fact_player_game_stats' as table_name, COUNT(*) as row_count, \
+                               COUNT(DISTINCT g.season_id) as seasons \
+                         FROM fact_player_game_stats fpgs \
+                         JOIN common_player_info p ON fpgs.person_id = p.person_id \
+                         JOIN game g ON fpgs.game_id = g.game_id \
+                         WHERE p.display_first_last = '{}'",
                         Self::sql_safe(entity_name)
                     ),
                     "team" => format!(
@@ -1464,16 +1475,20 @@ impl Agent {
                 let safe_p2 = Self::sql_safe(p2);
                 let sql = format!(
                     "WITH player_stats AS ( \
-                       SELECT player_name, season_id, \
-                              AVG(pts) as ppg, AVG(reb) as rpg, AVG(ast) as apg, \
+                       SELECT p.display_first_last as player_name, g.season_id, \
+                              AVG(fpgs.points) as ppg, AVG(fpgs.reb) as rpg, AVG(fpgs.assists) as apg, \
                               COUNT(*) as games \
-                       FROM player_game_stats \
-                       WHERE player_name IN ('{}', '{}') \
-                       GROUP BY player_name, season_id \
+                       FROM fact_player_game_stats fpgs \
+                       JOIN common_player_info p ON fpgs.person_id = p.person_id \
+                       JOIN game g ON fpgs.game_id = g.game_id \
+                       WHERE p.display_first_last IN ('{}', '{}') \
+                       GROUP BY p.display_first_last, g.season_id \
                      ), \
                      league_avg AS ( \
-                       SELECT season_id, AVG(pts) as lg_ppg \
-                       FROM player_game_stats GROUP BY season_id \
+                       SELECT g2.season_id, AVG(fpgs2.points) as lg_ppg \
+                       FROM fact_player_game_stats fpgs2 \
+                       JOIN game g2 ON fpgs2.game_id = g2.game_id \
+                       GROUP BY g2.season_id \
                      ) \
                      SELECT ps.player_name, ps.season_id, ps.ppg, ps.rpg, ps.apg, ps.games, \
                             la.lg_ppg, \
@@ -1519,23 +1534,31 @@ impl Agent {
                 let reasoning = format!("Full profile for {}", player);
                 let safe = Self::sql_safe(player);
                 let sql = format!(
-                    "SELECT 'career' as section, player_name, \
-                           COUNT(*) as games, SUM(pts) as total_pts, \
-                           ROUND(AVG(pts),1) as ppg, ROUND(AVG(reb),1) as rpg, \
-                           ROUND(AVG(ast),1) as apg, MAX(pts) as career_high_pts \
-                     FROM player_game_stats WHERE player_name = '{}' GROUP BY player_name \
+                    "SELECT 'career' as section, p.display_first_last as player_name, \
+                           COUNT(*) as games, SUM(fpgs.points) as total_pts, \
+                           ROUND(AVG(fpgs.points),1) as ppg, ROUND(AVG(fpgs.reb),1) as rpg, \
+                           ROUND(AVG(fpgs.assists),1) as apg, MAX(fpgs.points) as career_high_pts \
+                     FROM fact_player_game_stats fpgs \
+                     JOIN common_player_info p ON fpgs.person_id = p.person_id \
+                     WHERE p.display_first_last = '{}' GROUP BY p.display_first_last \
                      UNION ALL \
-                     SELECT 'best_season', player_name, \
-                           season_id, SUM(pts), ROUND(AVG(pts),1), ROUND(AVG(reb),1), \
-                           ROUND(AVG(ast),1), MAX(pts) \
-                     FROM player_game_stats WHERE player_name = '{}' \
-                     GROUP BY player_name, season_id ORDER BY SUM(pts) DESC LIMIT 5 \
+                     SELECT 'best_season', p.display_first_last, \
+                           g.season_id, SUM(fpgs.points), ROUND(AVG(fpgs.points),1), ROUND(AVG(fpgs.reb),1), \
+                           ROUND(AVG(fpgs.assists),1), MAX(fpgs.points) \
+                     FROM fact_player_game_stats fpgs \
+                     JOIN common_player_info p ON fpgs.person_id = p.person_id \
+                     JOIN game g ON fpgs.game_id = g.game_id \
+                     WHERE p.display_first_last = '{}' \
+                     GROUP BY p.display_first_last, g.season_id ORDER BY SUM(fpgs.points) DESC LIMIT 5 \
                      UNION ALL \
-                     SELECT 'playoff', player_name, \
-                           COUNT(*), SUM(pts), ROUND(AVG(pts),1), ROUND(AVG(reb),1), \
-                           ROUND(AVG(ast),1), MAX(pts) \
-                     FROM player_game_stats WHERE player_name = '{}' AND season_id LIKE '%P%' \
-                     GROUP BY player_name",
+                     SELECT 'playoff', p.display_first_last, \
+                           COUNT(*), SUM(fpgs.points), ROUND(AVG(fpgs.points),1), ROUND(AVG(fpgs.reb),1), \
+                           ROUND(AVG(fpgs.assists),1), MAX(fpgs.points) \
+                     FROM fact_player_game_stats fpgs \
+                     JOIN common_player_info p ON fpgs.person_id = p.person_id \
+                     JOIN game g ON fpgs.game_id = g.game_id \
+                     WHERE p.display_first_last = '{}' AND g.season_id LIKE '%P%' \
+                     GROUP BY p.display_first_last",
                     safe, safe, safe
                 );
                 let result_str = match self.db.run_sql(sql.clone(), Some(30)).await {
