@@ -29,19 +29,18 @@ fn test_db_history_entry_success() {
 
 #[test]
 fn test_db_history_entry_failure() {
-    let entry =
-        DbHistoryEntry {
-            timestamp: 1712000000,
-            sql: "BAD SQL".into(),
-            row_count: 0,
-            elapsed_ms: 5,
-            success: false,
-            error_category: Some("syntax_error".to_string()),
-            cache_hit: false,
-            model: None,
-            session_id: None,
-            tool_name: None,
-        };
+    let entry = DbHistoryEntry {
+        timestamp: 1712000000,
+        sql: "BAD SQL".into(),
+        row_count: 0,
+        elapsed_ms: 5,
+        success: false,
+        error_category: Some("syntax_error".to_string()),
+        cache_hit: false,
+        model: None,
+        session_id: None,
+        tool_name: None,
+    };
     let json = serde_json::to_string(&entry).unwrap();
     assert!(json.contains("false"));
 }

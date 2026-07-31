@@ -5,13 +5,24 @@ use serde_json::{Map, Value, json};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicUsize, Ordering};
 
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct FeedbackEntry {
+    pub id: usize,
+    pub timestamp: u64,
+    pub session_id: String,
+    pub question: String,
+    pub generated_sql: String,
+    pub rating: String,
+    pub comment: String,
+}
+
 #[derive(Clone)]
 pub struct DbContext {
     pool: r2d2::Pool<duckdb::DuckdbConnectionManager>,
     cache: moka::sync::Cache<String, Vec<Value>>,
     history: Arc<Mutex<Vec<DbHistoryEntry>>>,
+    feedback: Arc<Mutex<Vec<FeedbackEntry>>>,
     lifetime_query_count: Arc<AtomicUsize>,
-    /// Default row cap for run_sql (env: ROW_CAP, default 50).
     row_cap: usize,
 }
 
@@ -125,6 +136,7 @@ impl DbContext {
             pool,
             cache,
             history: Arc::new(Mutex::new(Vec::new())),
+            feedback: Arc::new(Mutex::new(Vec::new())),
             lifetime_query_count: Arc::new(AtomicUsize::new(0)),
             row_cap,
         })
@@ -295,6 +307,65 @@ impl DbContext {
     /// Lifetime count of SQL executions (success + failure + cache hit).
     pub fn get_lifetime_query_count(&self) -> usize {
         self.lifetime_query_count.load(Ordering::Relaxed)
+    }
+
+    /// Record user feedback on an answer.
+    pub fn record_feedback(
+        &self,
+        session_id: &str,
+        question: &str,
+        generated_sql: &str,
+        rating: &str,
+        comment: &str,
+    ) -> usize {
+        let id = self.feedback.lock().len() + 1;
+        let entry = FeedbackEntry {
+            id,
+            timestamp: std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map(|d| d.as_secs())
+                .unwrap_or(0),
+            session_id: session_id.to_string(),
+            question: question.to_string(),
+            generated_sql: generated_sql.to_string(),
+            rating: rating.to_string(),
+            comment: comment.to_string(),
+        };
+        self.feedback.lock().push(entry);
+        id
+    }
+
+    /// List recent feedback entries.
+    pub fn list_feedback(&self) -> Vec<FeedbackEntry> {
+        self.feedback.lock().iter().rev().take(50).cloned().collect()
+    }
+
+    /// Canonical semantic metrics that the model should reference instead of
+    /// rewriting formulas differently between conversations.
+    pub fn get_semantic_metrics() -> &'static [(&'static str, &'static str)] {
+        &[
+            ("points_per_game", "ROUND(AVG(pts), 1)"),
+            ("true_shooting_percentage", "ROUND(2 * pts / (2 * fga + 0.44 * fta), 3)"),
+            ("usage_percentage", "ROUND((fga + 0.44 * fta + tov) * 48 / (minutes * team_possessions), 3)"),
+            ("net_rating", "ROUND(offensive_rating - defensive_rating, 1)"),
+            ("pace", "ROUND(48 * (team_poss + opp_poss) / (2 * minutes / 5), 1)"),
+            ("win_percentage", "ROUND(CASE WHEN team_score > opp_score THEN 1.0 ELSE 0.0 END, 3)"),
+            (
+                "clutch_minutes",
+                "ROUND(SUM(CASE WHEN abs_score_margin <= 5 AND period >= 4 THEN minutes ELSE 0 END), 1)",
+            ),
+            ("playoff_game", "CASE WHEN season_id LIKE '%P%' THEN 1 ELSE 0 END"),
+        ]
+    }
+
+    /// Format semantic metrics as a system prompt snippet for the LLM.
+    pub fn format_metrics_for_prompt() -> String {
+        let metrics = Self::get_semantic_metrics();
+        let mut out = String::from("Canonical Metrics (use these formulas for consistency):\n");
+        for (name, formula) in metrics {
+            out.push_str(&format!("  • {}: {}\n", name, formula));
+        }
+        out
     }
 
     /// Classify a DuckDB error message into a short category string.

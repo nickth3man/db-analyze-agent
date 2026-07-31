@@ -999,6 +999,19 @@
             badgeBar.innerHTML = badgeHtml;
             block.appendChild(badgeBar.firstElementChild);
 
+            // ── Query Repair Diagnostics ──
+            const resultStr = tool.result || '';
+            if (resultStr.includes('[Auto-corrected') || resultStr.includes('Candidate bindings')) {
+                const diagDiv = document.createElement('div');
+                diagDiv.className = 'px-3 py-2 bg-amber-900/20 border-b border-amber-700/30 text-xs';
+                if (resultStr.includes('[Auto-corrected')) {
+                    diagDiv.innerHTML = '<span class="text-amber-400 font-semibold">🔧 Query Auto-Repaired</span> <span class="text-gray-400">— Column name was corrected and retried successfully.</span>';
+                } else {
+                    diagDiv.innerHTML = '<span class="text-orange-400 font-semibold">⚠️ Query Error</span> <span class="text-gray-400">— ' + escapeHtml(resultStr.substring(0, 200)) + '</span>';
+                }
+                block.appendChild(diagDiv);
+            }
+
             // ── Reasoning (collapsible) ──
             const reasoningDetails = document.createElement('details');
             reasoningDetails.open = true;
@@ -1248,6 +1261,48 @@
                     inner.appendChild(chipsWrapper);
                 }
             }
+
+            // ── Feedback buttons ──
+            const feedbackDiv = document.createElement('div');
+            feedbackDiv.className = 'mt-3 flex flex-wrap items-center gap-2 border-t border-[#30363d] pt-3';
+            feedbackDiv.innerHTML = '<span class="text-xs text-gray-500">Was this helpful?</span>';
+            const ratings = [
+                {label: '👍 Helpful', value: 'helpful', color: 'text-green-400 hover:bg-green-900/30'},
+                {label: '👎 Not helpful', value: 'not_helpful', color: 'text-red-400 hover:bg-red-900/30'},
+                {label: '❌ Wrong stat', value: 'incorrect_stat', color: 'text-orange-400 hover:bg-orange-900/30'},
+                {label: '🔍 Wrong interpretation', value: 'wrong_interpretation', color: 'text-yellow-400 hover:bg-yellow-900/30'},
+                {label: '📝 Missing context', value: 'missing_context', color: 'text-blue-400 hover:bg-blue-900/30'},
+            ];
+            for (const r of ratings) {
+                const btn = document.createElement('button');
+                btn.className = 'text-xs px-2 py-1 rounded border border-[#30363d] transition-colors ' + r.color;
+                btn.textContent = r.label;
+                btn.onclick = async () => {
+                    btn.disabled = true;
+                    btn.classList.add('opacity-50');
+                    const question = currentTrace?.steps?.[0]?.content || currentTrace?.final_answer || '';
+                    const sql = currentTrace?.steps?.flatMap(s => s.tool_calls).find(t => t.tool_name === 'run_sql')?.query_or_params || '';
+                    try {
+                        await fetch('/api/feedback', {
+                            method: 'POST',
+                            headers: {'Content-Type': 'application/json'},
+                            body: JSON.stringify({
+                                session_id: currentSessionId,
+                                question: question.substring(0, 500),
+                                generated_sql: sql.substring(0, 1000),
+                                rating: r.value,
+                                comment: ''
+                            })
+                        });
+                        btn.textContent = '✓ Sent';
+                        btn.classList.add('text-green-500');
+                    } catch (_) {
+                        btn.textContent = 'Failed';
+                    }
+                };
+                feedbackDiv.appendChild(btn);
+            }
+            inner.appendChild(feedbackDiv);
 
             wrapper.appendChild(inner);
             document.getElementById('chat-messages').appendChild(wrapper);

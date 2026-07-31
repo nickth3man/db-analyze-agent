@@ -100,6 +100,8 @@ pub struct Agent {
     openrouter_url: String,
     /// OpenRouter model identifier (env: MODEL, default: qwen/qwen3.7-flash).
     model: String,
+    /// Fallback model if primary fails (env: FALLBACK_MODEL, optional).
+    fallback_model: Option<String>,
     /// Max reasoning loop iterations per turn (env: MAX_ITERATIONS, default: 12).
     max_iterations: usize,
     dirty: Arc<PlMutex<bool>>,
@@ -166,6 +168,39 @@ fn args_to_tool_start_fields(name: &str, args: &Value) -> (String, String) {
             let stat = args["stat_name"].as_str().unwrap_or("");
             (format!("Ranking {} across NBA history", stat), serde_json::to_string(args).unwrap_or_default())
         }
+        "find_leaders" => {
+            let stat = args["stat_name"].as_str().unwrap_or("");
+            (format!("Finding {} leaders", stat), serde_json::to_string(args).unwrap_or_default())
+        }
+        "get_game_summary" => {
+            let gid = args["game_id"].as_str().unwrap_or("unknown");
+            (format!("Summarizing game {}", gid), serde_json::to_string(args).unwrap_or_default())
+        }
+        "get_head_to_head" => {
+            let t1 = args["team1"].as_str().unwrap_or("");
+            let t2 = args["team2"].as_str().unwrap_or("");
+            (format!("H2H: {} vs {}", t1, t2), serde_json::to_string(args).unwrap_or_default())
+        }
+        "check_data_coverage" => {
+            let et = args["entity_type"].as_str().unwrap_or("");
+            (format!("Checking {} coverage", et), serde_json::to_string(args).unwrap_or_default())
+        }
+        "export_query_result" => {
+            ("Exporting query result".to_string(), serde_json::to_string(args).unwrap_or_default())
+        }
+        "era_adjusted_compare" => {
+            let p1 = args["player1"].as_str().unwrap_or("");
+            let p2 = args["player2"].as_str().unwrap_or("");
+            (format!("Era-adjusted compare: {} vs {}", p1, p2), serde_json::to_string(args).unwrap_or_default())
+        }
+        "game_reconstruction" => {
+            let gid = args["game_id"].as_str().unwrap_or("unknown");
+            (format!("Reconstructing game {}", gid), serde_json::to_string(args).unwrap_or_default())
+        }
+        "expand_player_profile" => {
+            let player = args["player_name"].as_str().unwrap_or("");
+            (format!("Full profile for {}", player), player.to_string())
+        }
         _ => (format!("Running {}", name), serde_json::to_string(args).unwrap_or_default()),
     }
 }
@@ -180,6 +215,7 @@ impl Agent {
         let openrouter_url = std::env::var("OPENROUTER_BASE_URL")
             .unwrap_or_else(|_| "https://openrouter.ai/api/v1/chat/completions".to_string());
         let model = std::env::var("MODEL").unwrap_or_else(|_| "qwen/qwen3.7-flash".to_string());
+        let fallback_model = std::env::var("FALLBACK_MODEL").ok().filter(|s| !s.is_empty());
         let max_iterations: usize =
             std::env::var("MAX_ITERATIONS").unwrap_or_else(|_| "12".to_string()).parse().unwrap_or(12);
         let key_tables: Vec<&str> = vec![
@@ -229,6 +265,7 @@ impl Agent {
             sessions_path,
             openrouter_url,
             model,
+            fallback_model,
             max_iterations,
             dirty: dirty.clone(),
             save_signal: save_signal.clone(),
@@ -344,8 +381,10 @@ impl Agent {
             • If a query fails, read 'Candidate bindings' for correct column names.\n\
             • End your response with 2-3 follow-up questions the user might ask next.\n\
               Format each as: SUGGESTED: <question> on its own line after your main answer.\n\n\
-            {}\n\n{}",
-            self.insights_brief, self.schema_summary
+            {}\n\n{}\n\n{}",
+            self.insights_brief,
+            self.schema_summary,
+            crate::db::DbContext::format_metrics_for_prompt()
         )
     }
 
@@ -516,54 +555,212 @@ impl Agent {
                                "required": ["stat_name", "value", "scope"]
                            }
                        }
+                   },
+                   {
+                       "type": "function",
+                       "function": {
+                           "name": "find_leaders",
+                           "description": "Find statistical leaders for a given stat. Returns top N players sorted by the stat.",
+                           "parameters": {
+                               "type": "object",
+                               "properties": {
+                                   "stat_name": { "type": "string", "description": "Stat to rank (e.g. 'points', 'rebounds', 'assists', 'threes')." },
+                                   "season": { "type": "string", "description": "Optional season filter (e.g. '2023-24')." },
+                                   "limit": { "type": "integer", "description": "Number of leaders to return (default 10)." }
+                               },
+                               "required": ["stat_name"]
+                           }
+                       }
+                   },
+                   {
+                       "type": "function",
+                       "function": {
+                           "name": "get_game_summary",
+                           "description": "Get a full game summary: box score, key stats, and notable performances.",
+                           "parameters": {
+                               "type": "object",
+                               "properties": {
+                                   "game_id": { "type": "string", "description": "Game ID to look up." },
+                                   "game_date": { "type": "string", "description": "Game date (YYYY-MM-DD) if game_id is unknown." }
+                               }
+                           }
+                       }
+                   },
+                   {
+                       "type": "function",
+                       "function": {
+                           "name": "get_head_to_head",
+                           "description": "Full head-to-head explorer: overall record, home/away splits, average margin, series results.",
+                           "parameters": {
+                               "type": "object",
+                               "properties": {
+                                   "team1": { "type": "string", "description": "First team name or abbreviation." },
+                                   "team2": { "type": "string", "description": "Second team name or abbreviation." },
+                                   "season": { "type": "string", "description": "Optional season filter." }
+                               },
+                               "required": ["team1", "team2"]
+                           }
+                       }
+                   },
+                   {
+                       "type": "function",
+                       "function": {
+                           "name": "check_data_coverage",
+                           "description": "Check data completeness: season coverage, missing values, table freshness for a given entity.",
+                           "parameters": {
+                               "type": "object",
+                               "properties": {
+                                   "entity_type": { "type": "string", "description": "Type: 'player', 'team', 'season', 'table'." },
+                                   "entity_name": { "type": "string", "description": "Name or ID of the entity to check." }
+                               },
+                               "required": ["entity_type"]
+                           }
+                       }
+                   },
+                   {
+                       "type": "function",
+                       "function": {
+                           "name": "export_query_result",
+                           "description": "Execute a query and return results in CSV or JSON format for download.",
+                           "parameters": {
+                               "type": "object",
+                               "properties": {
+                                   "query": { "type": "string", "description": "SQL query to execute." },
+                                   "format": { "type": "string", "description": "Output format: 'csv' or 'json'." },
+                                   "filename": { "type": "string", "description": "Suggested filename for download." }
+                               },
+                               "required": ["query", "format"]
+                           }
+                       }
+                   },
+                   {
+                       "type": "function",
+                       "function": {
+                           "name": "era_adjusted_compare",
+                           "description": "Compare players across eras using league-relative metrics: points vs league avg, pace-adjusted stats, percentile within season.",
+                           "parameters": {
+                               "type": "object",
+                               "properties": {
+                                   "player1": { "type": "string", "description": "First player name." },
+                                   "player2": { "type": "string", "description": "Second player name." },
+                                   "metric": { "type": "string", "description": "Metric to compare (default: 'points_per_game')." }
+                               },
+                               "required": ["player1", "player2"]
+                           }
+                       }
+                   },
+                   {
+                       "type": "function",
+                       "function": {
+                           "name": "game_reconstruction",
+                           "description": "Reconstruct a game: lead changes, ties, scoring runs, largest lead, key turning points.",
+                           "parameters": {
+                               "type": "object",
+                               "properties": {
+                                   "game_id": { "type": "string", "description": "Game ID." },
+                                   "game_date": { "type": "string", "description": "Game date if game_id unknown." }
+                               }
+                           }
+                       }
+                   },
+                   {
+                       "type": "function",
+                       "function": {
+                           "name": "expand_player_profile",
+                           "description": "Full player profile: career highs, playoff performance, team history, awards, shooting splits, similar players.",
+                           "parameters": {
+                               "type": "object",
+                               "properties": {
+                                   "player_name": { "type": "string", "description": "Player name." }
+                               },
+                               "required": ["player_name"]
+                           }
+                       }
                    }
                ])
     }
 
-    /// Internal: run a single OpenRouter chat completion, parse, and return.
+    /// Internal: run a single OpenRouter chat completion with retry and fallback.
     async fn call_openrouter(&self, messages: &[ChatMessage], tools: &Value) -> Result<ChatCompletion> {
-        let req_body = json!({
-            "model": self.model,
-            "messages": messages,
-            "tools": tools,
-            "reasoning": { "exclude": false }
-        });
-        let res = self
-            .http_client
-            .post(&self.openrouter_url)
-            .header("Authorization", format!("Bearer {}", self.api_key))
-            .header("HTTP-Referer", "https://github.com/db-analyze-agent")
-            .header("X-Title", "NBA Data Agent")
-            .json(&req_body)
-            .send()
-            .await?;
+        let max_retries = 3;
+        let mut last_err = None;
 
-        if !res.status().is_success() {
-            let err_text = res.text().await?;
-            return Err(anyhow!("OpenRouter API error: {}", err_text));
-        }
+        // Try primary model, then fallback, each with retries
+        let models: Vec<&str> =
+            if let Some(ref fb) = self.fallback_model { vec![&self.model, fb] } else { vec![&self.model] };
 
-        let res_json: Value = res.json().await?;
-        let choice = res_json["choices"][0].clone();
-        let msg_val = &choice["message"];
+        for model_name in &models {
+            for attempt in 0..max_retries {
+                if attempt > 0 {
+                    let delay_ms = 1000 * 2u64.pow(attempt as u32 - 1);
+                    tracing::info!("Retrying {} after {}ms (attempt {})", model_name, delay_ms, attempt + 1);
+                    tokio::time::sleep(std::time::Duration::from_millis(delay_ms)).await;
+                }
 
-        let content = msg_val["content"].as_str().map(|s| s.to_string());
-        let reasoning = msg_val["reasoning"].as_str().map(|s| s.to_string());
-        let mut tool_calls = Vec::new();
-        if let Some(arr) = msg_val["tool_calls"].as_array() {
-            for tc in arr {
-                let fn_val = &tc["function"];
-                let args_str = fn_val["arguments"].as_str().unwrap_or("{}");
-                let arguments: Value = serde_json::from_str(args_str).unwrap_or(Value::Null);
-                tool_calls.push(ParsedToolCall {
-                    id: tc["id"].as_str().unwrap_or("").to_string(),
-                    name: fn_val["name"].as_str().unwrap_or("").to_string(),
-                    arguments,
+                let req_body = json!({
+                    "model": model_name,
+                    "messages": messages,
+                    "tools": tools,
+                    "reasoning": { "exclude": false }
                 });
+
+                let res = match self
+                    .http_client
+                    .post(&self.openrouter_url)
+                    .header("Authorization", format!("Bearer {}", self.api_key))
+                    .header("HTTP-Referer", "https://github.com/db-analyze-agent")
+                    .header("X-Title", "NBA Data Agent")
+                    .json(&req_body)
+                    .timeout(std::time::Duration::from_secs(60))
+                    .send()
+                    .await
+                {
+                    Ok(r) => r,
+                    Err(e) => {
+                        last_err = Some(anyhow!("HTTP error: {}", e));
+                        continue;
+                    }
+                };
+
+                if !res.status().is_success() {
+                    let status = res.status();
+                    let err_text = res.text().await.unwrap_or_default();
+                    last_err = Some(anyhow!("API error {}: {}", status, err_text));
+                    continue;
+                }
+
+                let res_json: Value = match res.json().await {
+                    Ok(v) => v,
+                    Err(e) => {
+                        last_err = Some(anyhow!("JSON parse error: {}", e));
+                        continue;
+                    }
+                };
+
+                let choice = res_json["choices"][0].clone();
+                let msg_val = &choice["message"];
+
+                let content = msg_val["content"].as_str().map(|s| s.to_string());
+                let reasoning = msg_val["reasoning"].as_str().map(|s| s.to_string());
+                let mut tool_calls = Vec::new();
+                if let Some(arr) = msg_val["tool_calls"].as_array() {
+                    for tc in arr {
+                        let fn_val = &tc["function"];
+                        let args_str = fn_val["arguments"].as_str().unwrap_or("{}");
+                        let arguments: Value = serde_json::from_str(args_str).unwrap_or(Value::Null);
+                        tool_calls.push(ParsedToolCall {
+                            id: tc["id"].as_str().unwrap_or("").to_string(),
+                            name: fn_val["name"].as_str().unwrap_or("").to_string(),
+                            arguments,
+                        });
+                    }
+                }
+
+                return Ok(ChatCompletion { content, reasoning, tool_calls });
             }
         }
 
-        Ok(ChatCompletion { content, reasoning, tool_calls })
+        Err(last_err.unwrap_or_else(|| anyhow!("All models failed")))
     }
 
     /// Push a parsed completion into the message history and return a
@@ -1084,6 +1281,264 @@ impl Agent {
                     rank_col, rank_col, order, where_clause, value
                 );
                 let result_str = match self.db.run_sql(sql.clone(), Some(20)).await {
+                    Ok(rows) => serde_json::to_string_pretty(&rows).unwrap_or_default(),
+                    Err(e) => format!("Error: {}", e),
+                };
+                (reasoning, sql, result_str)
+            }
+            "find_leaders" => {
+                let stat = args["stat_name"].as_str().unwrap_or("points");
+                let season_filter = args["season"]
+                    .as_str()
+                    .map(|s| format!(" AND season_id = '{}'", Self::sql_safe(s)))
+                    .unwrap_or_default();
+                let limit: usize = args["limit"].as_u64().unwrap_or(10) as usize;
+                let reasoning = format!("Finding {} leaders", stat);
+                let (col, label) = match stat {
+                    "points" => ("pts", "ppg"),
+                    "rebounds" => ("reb", "rpg"),
+                    "assists" => ("ast", "apg"),
+                    "threes" => ("fg3m", "3pg"),
+                    "steals" => ("stl", "spg"),
+                    "blocks" => ("blk", "bpg"),
+                    _ => ("pts", "ppg"),
+                };
+                let sql = format!(
+                    "SELECT player_name, ROUND(AVG({}),1) as {}, COUNT(*) as games \
+                     FROM player_game_stats WHERE 1=1{} \
+                     GROUP BY player_name HAVING COUNT(*) >= 10 \
+                     ORDER BY {} DESC LIMIT {}",
+                    col, label, season_filter, label, limit
+                );
+                let result_str = match self.db.run_sql(sql.clone(), Some(limit)).await {
+                    Ok(rows) => serde_json::to_string_pretty(&rows).unwrap_or_default(),
+                    Err(e) => format!("Error: {}", e),
+                };
+                (reasoning, sql, result_str)
+            }
+            "get_game_summary" => {
+                let game_id = args["game_id"].as_str().unwrap_or("");
+                let game_date = args["game_date"].as_str().unwrap_or("");
+                let reasoning = format!("Summarizing game {} {}", game_id, game_date);
+                let where_clause = if !game_id.is_empty() {
+                    format!("WHERE g.game_id = '{}' ", Self::sql_safe(game_id))
+                } else if !game_date.is_empty() {
+                    format!("WHERE g.game_date = '{}' ", Self::sql_safe(game_date))
+                } else {
+                    "".to_string()
+                };
+                let sql = format!(
+                    "SELECT g.game_id, g.game_date, \
+                           ht.team_name as home_team, at.team_name as away_team, \
+                           ls.team_score as home_score, ls.opp_score as away_score \
+                     FROM game g \
+                     JOIN line_score ls ON g.game_id = ls.game_id \
+                     JOIN team ht ON ls.team_id = ht.team_id \
+                     JOIN team at ON ls.opp_team_id = at.team_id \
+                     {}ORDER BY g.game_date DESC LIMIT 5",
+                    where_clause
+                );
+                let result_str = match self.db.run_sql(sql.clone(), Some(10)).await {
+                    Ok(rows) => serde_json::to_string_pretty(&rows).unwrap_or_default(),
+                    Err(e) => format!("Error: {}", e),
+                };
+                (reasoning, sql, result_str)
+            }
+            "get_head_to_head" => {
+                let t1 = args["team1"].as_str().unwrap_or("");
+                let t2 = args["team2"].as_str().unwrap_or("");
+                let season_filter = args["season"]
+                    .as_str()
+                    .map(|s| format!(" AND g.season_id = '{}'", Self::sql_safe(s)))
+                    .unwrap_or_default();
+                let reasoning = format!("H2H: {} vs {}", t1, t2);
+                let safe_t1 = Self::sql_safe(t1);
+                let safe_t2 = Self::sql_safe(t2);
+                let sql = format!(
+                    "SELECT ht.team_name as home_team, at.team_name as away_team, \
+                           ls.team_score as home_score, ls.opp_score as away_score, \
+                           g.game_date \
+                     FROM game g \
+                     JOIN line_score ls ON g.game_id = ls.game_id \
+                     JOIN team ht ON ls.team_id = ht.team_id \
+                     JOIN team at ON ls.opp_team_id = at.team_id \
+                     WHERE (ht.team_name = '{}' AND at.team_name = '{}') \
+                        OR (ht.team_name = '{}' AND at.team_name = '{}'){} \
+                     ORDER BY g.game_date DESC LIMIT 20",
+                    safe_t1, safe_t2, safe_t2, safe_t1, season_filter
+                );
+                let result_str = match self.db.run_sql(sql.clone(), Some(20)).await {
+                    Ok(rows) => serde_json::to_string_pretty(&rows).unwrap_or_default(),
+                    Err(e) => format!("Error: {}", e),
+                };
+                (reasoning, sql, result_str)
+            }
+            "check_data_coverage" => {
+                let entity_type = args["entity_type"].as_str().unwrap_or("player");
+                let entity_name = args["entity_name"].as_str().unwrap_or("");
+                let reasoning = format!("Checking {} coverage for {}", entity_type, entity_name);
+                let sql = match entity_type {
+                    "player" => format!(
+                        "SELECT 'player_game_stats' as table_name, COUNT(*) as row_count, \
+                               MIN(game_date) as earliest, MAX(game_date) as latest, \
+                               COUNT(DISTINCT season_id) as seasons \
+                         FROM player_game_stats WHERE player_name = '{}' \
+                         UNION ALL \
+                         SELECT 'player_career_stats', COUNT(*), MIN(season_id), MAX(season_id), COUNT(DISTINCT season_id) \
+                         FROM player_career_stats WHERE player_name = '{}'",
+                        Self::sql_safe(entity_name),
+                        Self::sql_safe(entity_name)
+                    ),
+                    "team" => format!(
+                        "SELECT 'team_stats' as table_name, COUNT(*) as row_count, \
+                               MIN(season_id) as earliest, MAX(season_id) as latest, \
+                               COUNT(DISTINCT season_id) as seasons \
+                         FROM team_stats WHERE team_name = '{}'",
+                        Self::sql_safe(entity_name)
+                    ),
+                    "season" => format!(
+                        "SELECT 'game' as table_name, COUNT(*) as row_count, \
+                               MIN(game_date) as earliest, MAX(game_date) as latest, \
+                               COUNT(DISTINCT game_id) as games \
+                         FROM game WHERE season_id = '{}'",
+                        Self::sql_safe(entity_name)
+                    ),
+                    _ => "SELECT 'unknown' as table_name, 0 as row_count".to_string(),
+                };
+                let result_str = match self.db.run_sql(sql.clone(), Some(10)).await {
+                    Ok(rows) => serde_json::to_string_pretty(&rows).unwrap_or_default(),
+                    Err(e) => format!("Error: {}", e),
+                };
+                (reasoning, sql, result_str)
+            }
+            "export_query_result" => {
+                let query = args["query"].as_str().unwrap_or("");
+                let format = args["format"].as_str().unwrap_or("csv");
+                let reasoning = format!("Exporting query result as {}", format);
+                let result_str = match self.db.run_sql(query.to_string(), Some(500)).await {
+                    Ok(rows) => {
+                        if format == "csv" {
+                            if rows.is_empty() {
+                                "No rows returned".to_string()
+                            } else {
+                                let keys: Vec<&str> = rows[0]
+                                    .as_object()
+                                    .map(|o| o.keys().map(|k| k.as_str()).collect())
+                                    .unwrap_or_default();
+                                let mut csv = keys.join(",");
+                                for row in &rows {
+                                    let vals: Vec<String> = keys
+                                        .iter()
+                                        .map(|k| {
+                                            row.get(*k)
+                                                .map(|v| {
+                                                    let s = v.to_string().trim_matches('"').to_string();
+                                                    if s.contains(',') || s.contains('"') || s.contains('\n') {
+                                                        format!("\"{}\"", s.replace('"', "\"\""))
+                                                    } else {
+                                                        s
+                                                    }
+                                                })
+                                                .unwrap_or_default()
+                                        })
+                                        .collect();
+                                    csv.push('\n');
+                                    csv.push_str(&vals.join(","));
+                                }
+                                csv
+                            }
+                        } else {
+                            serde_json::to_string_pretty(&rows).unwrap_or_default()
+                        }
+                    }
+                    Err(e) => format!("Error: {}", e),
+                };
+                (reasoning, query.to_string(), result_str)
+            }
+            "era_adjusted_compare" => {
+                let p1 = args["player1"].as_str().unwrap_or("");
+                let p2 = args["player2"].as_str().unwrap_or("");
+                let metric = args["metric"].as_str().unwrap_or("points_per_game");
+                let reasoning = format!("Era-adjusted compare: {} vs {} ({})", p1, p2, metric);
+                let safe_p1 = Self::sql_safe(p1);
+                let safe_p2 = Self::sql_safe(p2);
+                let sql = format!(
+                    "WITH player_stats AS ( \
+                       SELECT player_name, season_id, \
+                              AVG(pts) as ppg, AVG(reb) as rpg, AVG(ast) as apg, \
+                              COUNT(*) as games \
+                       FROM player_game_stats \
+                       WHERE player_name IN ('{}', '{}') \
+                       GROUP BY player_name, season_id \
+                     ), \
+                     league_avg AS ( \
+                       SELECT season_id, AVG(pts) as lg_ppg \
+                       FROM player_game_stats GROUP BY season_id \
+                     ) \
+                     SELECT ps.player_name, ps.season_id, ps.ppg, ps.rpg, ps.apg, ps.games, \
+                            la.lg_ppg, \
+                            ROUND(ps.ppg / NULLIF(la.lg_ppg, 0), 3) as era_ratio \
+                     FROM player_stats ps \
+                     JOIN league_avg la ON ps.season_id = la.season_id \
+                     ORDER BY ps.player_name, ps.season_id",
+                    safe_p1, safe_p2
+                );
+                let result_str = match self.db.run_sql(sql.clone(), Some(100)).await {
+                    Ok(rows) => serde_json::to_string_pretty(&rows).unwrap_or_default(),
+                    Err(e) => format!("Error: {}", e),
+                };
+                (reasoning, sql, result_str)
+            }
+            "game_reconstruction" => {
+                let game_id = args["game_id"].as_str().unwrap_or("");
+                let game_date = args["game_date"].as_str().unwrap_or("");
+                let reasoning = format!("Reconstructing game {} {}", game_id, game_date);
+                let where_clause = if !game_id.is_empty() {
+                    format!("WHERE pbp.game_id = '{}' ", Self::sql_safe(game_id))
+                } else if !game_date.is_empty() {
+                    format!("WHERE pbp.game_date = '{}' ", Self::sql_safe(game_date))
+                } else {
+                    "".to_string()
+                };
+                let sql = format!(
+                    "SELECT pbp.game_id, pbp.event_type, pbp.player_name, \
+                           pbp.visitor_desc, pbp.home_desc, pbp.period, \
+                           pbp.pctimestring, pbp.score, pbp.scoremargin \
+                     FROM play_by_play pbp \
+                     {}ORDER BY pbp.period, pbp.event_num LIMIT 200",
+                    where_clause
+                );
+                let result_str = match self.db.run_sql(sql.clone(), Some(200)).await {
+                    Ok(rows) => serde_json::to_string_pretty(&rows).unwrap_or_default(),
+                    Err(e) => format!("Error: {}", e),
+                };
+                (reasoning, sql, result_str)
+            }
+            "expand_player_profile" => {
+                let player = args["player_name"].as_str().unwrap_or("");
+                let reasoning = format!("Full profile for {}", player);
+                let safe = Self::sql_safe(player);
+                let sql = format!(
+                    "SELECT 'career' as section, player_name, \
+                           COUNT(*) as games, SUM(pts) as total_pts, \
+                           ROUND(AVG(pts),1) as ppg, ROUND(AVG(reb),1) as rpg, \
+                           ROUND(AVG(ast),1) as apg, MAX(pts) as career_high_pts \
+                     FROM player_game_stats WHERE player_name = '{}' GROUP BY player_name \
+                     UNION ALL \
+                     SELECT 'best_season', player_name, \
+                           season_id, SUM(pts), ROUND(AVG(pts),1), ROUND(AVG(reb),1), \
+                           ROUND(AVG(ast),1), MAX(pts) \
+                     FROM player_game_stats WHERE player_name = '{}' \
+                     GROUP BY player_name, season_id ORDER BY SUM(pts) DESC LIMIT 5 \
+                     UNION ALL \
+                     SELECT 'playoff', player_name, \
+                           COUNT(*), SUM(pts), ROUND(AVG(pts),1), ROUND(AVG(reb),1), \
+                           ROUND(AVG(ast),1), MAX(pts) \
+                     FROM player_game_stats WHERE player_name = '{}' AND season_id LIKE '%P%' \
+                     GROUP BY player_name",
+                    safe, safe, safe
+                );
+                let result_str = match self.db.run_sql(sql.clone(), Some(30)).await {
                     Ok(rows) => serde_json::to_string_pretty(&rows).unwrap_or_default(),
                     Err(e) => format!("Error: {}", e),
                 };

@@ -280,6 +280,7 @@ pub fn build_router(state: AppState) -> Router {
         .route("/api/export", get(export_handler))
         .route("/api/history", get(history_handler))
         .route("/api/stats", get(stats_handler))
+        .route("/api/feedback", post(feedback_handler))
         .route_layer(middleware::from_fn_with_state(limiter, rate_limit_middleware))
         .route_layer(middleware::from_fn_with_state(auth, auth_middleware))
         .layer(CompressionLayer::new())
@@ -425,6 +426,37 @@ async fn stats_handler(State(state): State<AppState>) -> Json<StatsResponse> {
         cache_hits,
         db_tables: state.insights.total_tables,
     })
+}
+
+// ── Feedback & correction workflow ──
+
+#[derive(Deserialize)]
+struct FeedbackRequest {
+    session_id: String,
+    question: String,
+    generated_sql: Option<String>,
+    rating: String, // "helpful", "not_helpful", "incorrect_stat", "wrong_interpretation", "missing_context"
+    comment: Option<String>,
+}
+
+#[derive(Serialize)]
+struct FeedbackResponse {
+    status: String,
+    id: usize,
+}
+
+async fn feedback_handler(
+    State(state): State<AppState>,
+    Json(payload): Json<FeedbackRequest>,
+) -> Result<Json<FeedbackResponse>, (StatusCode, String)> {
+    let id = state.db.record_feedback(
+        &payload.session_id,
+        &payload.question,
+        payload.generated_sql.as_deref().unwrap_or(""),
+        &payload.rating,
+        payload.comment.as_deref().unwrap_or(""),
+    );
+    Ok(Json(FeedbackResponse { status: "ok".to_string(), id }))
 }
 
 #[cfg(test)]
