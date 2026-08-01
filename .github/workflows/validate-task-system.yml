@@ -1,0 +1,31 @@
+name: Validate task system
+
+# Only runs when task records or the bundle change, so it stays out of the way
+# of the host project's own pipelines.
+on:
+  push:
+    paths:
+      - ".tasks/**"
+      - ".project-tasks/**"
+      - ".github/workflows/validate-task-system.yml"
+  pull_request:
+    paths:
+      - ".tasks/**"
+      - ".project-tasks/**"
+      - ".github/workflows/validate-task-system.yml"
+
+permissions:
+  contents: read
+
+jobs:
+  validate:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+          cache-dependency-path: .tasks/requirements.txt
+      - run: python -m pip install -r .tasks/requirements.txt
+      - run: python .tasks/scripts/validate.py --instance-only --instance-root .project-tasks
