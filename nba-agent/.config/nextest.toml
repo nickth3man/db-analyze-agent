@@ -1,0 +1,14 @@
+# cargo-nextest profile for nba-agent CI
+# Reference: https://nexte.st/
+
+[profile.ci]
+# Each parallel test thread opens its own DuckDB instance against the 18 GB
+# warehouse. Capping concurrency at 2 mirrors nba-agent/.cargo/config.toml
+# (RUST_TEST_THREADS = "2") and matches the nextest `test-threads = 2`
+# pattern used by nautilus_trader, holochain, cargo-lambda, moonrepo/proto,
+# near/near-sdk-contract-tools, and composefs/composefs-rs.
+fail-fast = false
+retries = 1
+test-threads = 2
+slow-timeout = { period = "60s", terminate-after = 5 }
+failure-output = "immediate-final"
